@@ -37,7 +37,7 @@ export interface DebugApi {
   addPoints: (amt: number) => void;
   jumpToRound: (r: number) => void;
   spawnAllZombiesTest: (count: number) => void;
-  triggerAction: (action: 'shoot' | 'reload' | 'melee' | 'interact' | 'swap') => void;
+  triggerAction: (action: 'shoot' | 'reload' | 'melee' | 'interact' | 'swap' | 'grenade') => void;
 }
 
 export class GameEngine {
@@ -89,7 +89,7 @@ export class GameEngine {
   private aiTickMs = 0;
   private frameTimeMs = 16.6;
   private fps = 60;
-  private menuOrbitAngle = 0;
+  private menuOrbitAngle = 0.42;
 
   private frameId = 0;
   private timerIds = new Set<number>();
@@ -201,7 +201,7 @@ export class GameEngine {
     this.mats = createPbrMaterialSet(this.renderer);
 
     this.emitLoad(0.75, 'Constructing Hollowfield Station...');
-    this.physics.initWorld(-7, 0.9, 18);
+    this.physics.initWorld(-7, 0.9, 22);
     const builder = new MapBuilder(
       this.scene,
       this.physics,
@@ -214,7 +214,7 @@ export class GameEngine {
 
     this.emitLoad(0.9, 'Initializing AI Flow-Fields & Weapons...');
     this.player = new PlayerController(this.physics, this.audio);
-    this.zombies = new ZombieSystem(this.scene, this.nav, this.audio, this.isSoftwareGl);
+    this.zombies = new ZombieSystem(this.scene, this.nav, this.audio, this.mats, this.isSoftwareGl);
     this.weapons = new WeaponSystem(
       this.scene,
       this.camera,
@@ -233,6 +233,7 @@ export class GameEngine {
       this.nav,
       this.audio,
       this.rng,
+      this.mats,
     );
 
     this.postProcess = new PostProcessPipeline(
@@ -410,10 +411,10 @@ export class GameEngine {
     this.audio.resume();
     this.audio.updateSettings(this.settings);
 
-    this.physics.playerBody.setNextKinematicTranslation({ x: -7, y: 0.9, z: 18 });
+    this.physics.playerBody.setNextKinematicTranslation({ x: -7, y: 0.9, z: 22 });
     this.physics.world.step();
 
-    this.player.reset(-7, 0.9, 18);
+    this.player.reset(-7, 0.9, 22);
     this.zombies.killAll();
     this.zombies.stuckTeleportCount = 0;
     this.weapons.reset();
@@ -426,7 +427,7 @@ export class GameEngine {
     this.roundBannerVisible = true;
     this.radioMessage = 'Station Radio: "Bloom containment failed. Hold the farmhouse until dawn."';
     this.radioTimer = 6.0;
-    this.nav.updateFlowField(-7, 18, 1, true);
+    this.nav.updateFlowField(-7, 22, 1, true);
 
     this.screen = 'playing';
     this.ignoreNextMouseMove = true;
@@ -437,9 +438,9 @@ export class GameEngine {
   public restartGame(): void {
     this.audio.init();
     this.audio.resume();
-    this.physics.playerBody.setNextKinematicTranslation({ x: -7, y: 0.9, z: 18 });
+    this.physics.playerBody.setNextKinematicTranslation({ x: -7, y: 0.9, z: 22 });
     this.physics.world.step();
-    this.player.reset(-7, 0.9, 18);
+    this.player.reset(-7, 0.9, 22);
 
     this.zombies.killAll();
     this.zombies.stuckTeleportCount = 0;
@@ -453,7 +454,7 @@ export class GameEngine {
     this.roundBannerVisible = true;
     this.radioMessage = 'Station Radio: "Stay sharp. Tear-in from the west windows."';
     this.radioTimer = 5.5;
-    this.nav.updateFlowField(-7, 18, 1, true);
+    this.nav.updateFlowField(-7, 22, 1, true);
 
     this.screen = 'playing';
     this.ignoreNextMouseMove = true;
@@ -684,6 +685,7 @@ export class GameEngine {
       input,
       this.interactables.perks,
       { instaKill: this.interactables.isInstaKill() },
+      this.rounds.round,
       {
         onPoints: (amt, reason) => this.awardPoints(amt, reason),
         onHitMarker: (kind) => {
@@ -717,6 +719,9 @@ export class GameEngine {
         this.roundBannerVisible = false;
       },
       (msg) => this.setRadioMessage(msg),
+      () => {
+        this.player.addCameraShake(0.085);
+      },
     );
     if (this.rounds.round !== prevRound) {
       this.roundBannerVisible = true;
@@ -856,6 +861,7 @@ export class GameEngine {
   private setRadioMessage(msg: string): void {
     this.radioMessage = msg;
     this.radioTimer = 5.5;
+    this.audio.playRadioChirp();
   }
 
   private triggerGameOver(): void {
@@ -1007,6 +1013,7 @@ export class GameEngine {
         if (action === 'reload') this.pendingReloadPress = true;
         if (action === 'melee') this.pendingMeleePress = true;
         if (action === 'swap') this.pendingSwapPress = true;
+        if (action === 'grenade') this.pendingGrenadePress = true;
       },
     };
     (window as unknown as { __HOLLOWFIELD_DEBUG__?: DebugApi }).__HOLLOWFIELD_DEBUG__ = api;

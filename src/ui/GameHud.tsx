@@ -45,8 +45,8 @@ export function GameHud({ snap, onResumePointer }: GameHudProps) {
       )}
 
       {/* Top-Left: Sector, Power, Easter Egg & Early Objective */}
-      <div className="fixed top-5 left-6 flex flex-col gap-1.5 max-w-md">
-        <div className="flex items-center gap-2.5 text-xs tracking-wider uppercase text-[#c4beaf]">
+      <div className="fixed top-5 left-6 flex flex-col gap-1.5 max-w-[265px]">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs tracking-wider uppercase text-[#c4beaf]">
           <span className="font-semibold text-[#ece9e2]">{snap.currentZoneLabel}</span>
           <span aria-hidden="true">·</span>
           <span className={snap.powerOn ? 'text-emerald-400' : 'text-amber-400'}>
@@ -64,7 +64,7 @@ export function GameHud({ snap, onResumePointer }: GameHudProps) {
           )}
         </div>
         {snap.objectiveHint && (
-          <p className="text-xs text-[#a8a295] leading-snug bg-[#0d100f]/80 px-2.5 py-1.5 border border-white/10">
+          <p className="text-[11px] text-[#a8a295] leading-snug bg-[#0d100f]/82 px-2.5 py-1.5 border border-white/10">
             {snap.objectiveHint}
           </p>
         )}
@@ -105,14 +105,14 @@ export function GameHud({ snap, onResumePointer }: GameHudProps) {
       )}
 
       {/* Top-Center: Round Banner & Radio Transmissions */}
-      <div className="fixed top-10 left-1/2 -translate-x-1/2 flex flex-col items-center gap-2 text-center">
+      <div className="fixed top-5 left-1/2 -translate-x-1/2 flex flex-col items-center gap-2 text-center max-w-[460px]">
         {snap.roundBannerText && (
-          <div className="font-display text-3xl tracking-[0.18em] uppercase text-[#ece9e2] px-6 py-1.5 bg-[#0a0c0b]/80 border border-white/10">
+          <div className="font-display text-3xl tracking-[0.18em] uppercase text-[#ece9e2] px-6 py-1.5 bg-[#0a0c0b]/82 border border-white/10">
             {snap.roundBannerText}
           </div>
         )}
         {snap.radioMessage && (
-          <div className="text-xs text-[#e5decb] bg-[#0e1210]/90 border border-amber-500/30 px-4 py-1.5 max-w-lg">
+          <div className="text-xs text-[#e5decb] bg-[#0e1210]/92 border border-amber-500/35 px-4 py-1.5">
             {snap.radioMessage}
           </div>
         )}
@@ -335,13 +335,20 @@ export function GameHud({ snap, onResumePointer }: GameHudProps) {
           {activeWeapon && (
             <div className="flex items-baseline justify-between gap-5">
               <div className="flex flex-col">
-                <span
-                  className={`font-display text-lg tracking-wide uppercase leading-tight ${
-                    activeWeapon.upgraded ? 'text-sky-300' : 'text-[#ece9e2]'
-                  }`}
-                >
-                  {activeWeapon.name}
-                </span>
+                <div className="flex items-center gap-2">
+                  <span
+                    className={`font-display text-lg tracking-wide uppercase leading-tight ${
+                      activeWeapon.upgraded ? 'text-sky-300' : 'text-[#ece9e2]'
+                    }`}
+                  >
+                    {activeWeapon.name}
+                  </span>
+                  {activeWeapon.upgraded && (
+                    <span className="text-[10px] font-mono-tabular uppercase tracking-wider px-1.5 py-0.5 bg-sky-500/20 border border-sky-400/40 text-sky-300">
+                      OC
+                    </span>
+                  )}
+                </div>
                 <span className="text-[11px] text-[#8d877a]">
                   Slot {snap.activeSlot + 1}/{snap.weapons.length} · Frag {snap.grenades}/
                   {snap.maxGrenades}

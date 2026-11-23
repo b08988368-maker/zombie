@@ -23,7 +23,7 @@ export interface PlayerInputState {
 }
 
 export class PlayerController {
-  public readonly position = new THREE.Vector3(-7, 0.9, 18);
+  public readonly position = new THREE.Vector3(-7, 0.9, 22);
   public readonly velocity = new THREE.Vector3();
   public yaw = 0; // looking toward -Z
   public pitch = 0;
@@ -109,6 +109,13 @@ export class PlayerController {
 
   public addCameraShake(amount: number): void {
     this.cameraShake = Math.min(0.12, this.cameraShake + amount);
+  }
+
+  public applyKnifeLunge(yaw: number): void {
+    const fwdX = -Math.sin(yaw);
+    const fwdZ = -Math.cos(yaw);
+    this.velocity.x += fwdX * BALANCE.player.knifeLungeSpeed;
+    this.velocity.z += fwdZ * BALANCE.player.knifeLungeSpeed;
   }
 
   public takeDamage(

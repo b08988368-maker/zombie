@@ -11,6 +11,7 @@ import type { AudioEngine } from '../engine/AudioEngine';
 import type { BvhWorld } from '../engine/BvhWorld';
 import type { NavGrid } from '../engine/NavGrid';
 import type { PhysicsWorld } from '../engine/PhysicsWorld';
+import type { PbrMaterialSet } from '../engine/ProceduralAssets';
 import type {
   CrateSlot,
   DoorObject,
@@ -20,7 +21,7 @@ import type {
 } from './MapBuilder';
 import type { PlayerController } from './PlayerController';
 import type { ActivePowerUpState, InteractPrompt, SeededRng } from './types';
-import type { WeaponSystem } from './WeaponSystem';
+import { WeaponSystem } from './WeaponSystem';
 import type { ZombieSystem } from './ZombieSystem';
 
 interface DroppedPowerUp {
@@ -42,6 +43,15 @@ const POWERUP_META: Record<PowerUpId, { label: string; color: number }> = {
   fire_sale: { label: 'FIRE SALE', color: 0xc084fc },
 };
 
+const CRATE_ROLL_CYCLE: WeaponId[] = [
+  'hedgerow',
+  'rattler',
+  'ironsight',
+  'longbow',
+  'hammerfall',
+  'phase_cannon',
+];
+
 export class InteractablesSystem {
   public powerOn = false;
   public readonly perks = new Set<PerkId>();
@@ -51,10 +61,11 @@ export class InteractablesSystem {
   // Crate state
   private activeCrateSlotIdx = 0;
   private crateUsesLeft = 6;
-  private crateState: 'idle' | 'rolling' | 'ready' | 'relocating' = 'idle';
+  private crateState: 'idle' | 'rolling' | 'ready' = 'idle';
   private crateTimer = 0;
   private crateOfferedWeapon: WeaponId = 'longbow';
-  private cratePreviewMesh: THREE.Mesh;
+  private cratePreviewGroup = new THREE.Group();
+  private cratePreviewModels = new Map<WeaponId, THREE.Group>();
 
   // Overclock Bench state
   private overclockState: 'idle' | 'processing' = 'idle';
@@ -65,6 +76,7 @@ export class InteractablesSystem {
   private trapState: 'ready' | 'active' | 'cooldown' = 'ready';
   private trapTimer = 0;
   private trapDamageTick = 0;
+  private trapHumTick = 0;
 
   // Power-ups state
   private readonly droppedPowerUps: DroppedPowerUp[] = [];
@@ -100,6 +112,7 @@ export class InteractablesSystem {
     nav: NavGrid,
     audio: AudioEngine,
     rng: SeededRng,
+    mats: PbrMaterialSet,
   ) {
     this.scene = scene;
     this.map = map;
@@ -113,17 +126,17 @@ export class InteractablesSystem {
       this.windowsById.set(w.id, w);
     }
 
-    this.cratePreviewMesh = new THREE.Mesh(
-      new THREE.BoxGeometry(0.9, 0.22, 0.22),
-      new THREE.MeshStandardMaterial({
-        color: 0xfbbf24,
-        emissive: 0xd97706,
-        emissiveIntensity: 0.9,
-        roughness: 0.3,
-      }),
-    );
-    this.cratePreviewMesh.visible = false;
-    this.scene.add(this.cratePreviewMesh);
+    // Cache full sculpted 3D weapon preview models inside the Supply Crate hologram group
+    for (const id of CRATE_ROLL_CYCLE) {
+      const model = WeaponSystem.buildWeaponShowcaseModel(id, mats);
+      model.scale.setScalar(1.35);
+      model.position.set(0, 0, 0.25);
+      model.visible = false;
+      this.cratePreviewGroup.add(model);
+      this.cratePreviewModels.set(id, model);
+    }
+    this.cratePreviewGroup.visible = false;
+    this.scene.add(this.cratePreviewGroup);
 
     this.powerUpLight = new THREE.PointLight(0x22c55e, 0, 6, 1.8);
     this.scene.add(this.powerUpLight);
@@ -175,7 +188,7 @@ export class InteractablesSystem {
       c.lid.rotation.x = 0;
     });
     this.crateState = 'idle';
-    this.cratePreviewMesh.visible = false;
+    this.cratePreviewGroup.visible = false;
 
     this.overclockState = 'idle';
     this.trapState = 'ready';
@@ -196,6 +209,9 @@ export class InteractablesSystem {
 
     for (const pl of this.map.poweredLights) {
       pl.intensity = 0.22;
+    }
+    for (const pe of this.map.poweredEmissives) {
+      pe.emissiveIntensity = 0.16;
     }
     for (const pm of this.map.perkMachines) {
       pm.light.intensity = 0.2;
@@ -234,6 +250,90 @@ export class InteractablesSystem {
     return out;
   }
 
+  private buildPowerUpEmblem(id: PowerUpId, color: number): THREE.Group {
+    const group = new THREE.Group();
+    const glowMat = new THREE.MeshStandardMaterial({
+      color,
+      emissive: color,
+      emissiveIntensity: 1.65,
+      roughness: 0.22,
+      metalness: 0.35,
+    });
+    const trimMat = new THREE.MeshStandardMaterial({
+      color: 0xe2e8f0,
+      emissive: color,
+      emissiveIntensity: 0.55,
+      roughness: 0.3,
+      metalness: 0.7,
+    });
+
+    if (id === 'max_ammo') {
+      // Tactical ammo crate emblem
+      const box = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.28, 0.26), glowMat);
+      const lid = new THREE.Mesh(new THREE.BoxGeometry(0.45, 0.06, 0.29), trimMat);
+      lid.position.y = 0.16;
+      const clasp = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.1, 0.28), trimMat);
+      clasp.position.y = 0.08;
+      group.add(box, lid, clasp);
+    } else if (id === 'insta_kill') {
+      // Crimson skull emblem (cranium, jaw, hollow sockets)
+      const cranium = new THREE.Mesh(new THREE.SphereGeometry(0.22, 12, 10), glowMat);
+      cranium.scale.set(0.95, 1.08, 1.05);
+      cranium.position.y = 0.06;
+      const jaw = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.16, 0.2), glowMat);
+      jaw.position.set(0, -0.1, 0.05);
+      const eyeMat = new THREE.MeshBasicMaterial({ color: 0x1a0404 });
+      const eyeL = new THREE.Mesh(new THREE.SphereGeometry(0.055, 8, 8), eyeMat);
+      eyeL.position.set(-0.08, 0.06, 0.18);
+      const eyeR = eyeL.clone();
+      eyeR.position.x = 0.08;
+      group.add(cranium, jaw, eyeL, eyeR);
+    } else if (id === 'double_points') {
+      // Double points gilded 2X medallion
+      const coin = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.28, 0.06, 20), glowMat);
+      coin.rotation.x = Math.PI / 2;
+      const barA = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.06, 0.09), trimMat);
+      barA.rotation.z = Math.PI / 4;
+      const barB = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.06, 0.09), trimMat);
+      barB.rotation.z = -Math.PI / 4;
+      group.add(coin, barA, barB);
+    } else if (id === 'nuke') {
+      // Finned tactical warhead
+      const shell = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.14, 0.34, 14), glowMat);
+      const nose = new THREE.Mesh(new THREE.ConeGeometry(0.14, 0.2, 14), trimMat);
+      nose.position.y = 0.26;
+      const finA = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.12, 0.03), trimMat);
+      finA.position.y = -0.14;
+      const finB = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.12, 0.42), trimMat);
+      finB.position.y = -0.14;
+      group.add(shell, nose, finA, finB);
+    } else if (id === 'carpenter') {
+      // Carpenter hammer emblem
+      const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.04, 0.46, 10), trimMat);
+      handle.rotation.z = 0.55;
+      const head = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.11, 0.11), glowMat);
+      head.position.set(-0.1, 0.17, 0);
+      head.rotation.z = 0.55;
+      group.add(handle, head);
+    } else {
+      // Fire Sale price tag / miniature supply icon
+      const tag = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.26, 0.08), glowMat);
+      tag.rotation.z = 0.22;
+      const hole = new THREE.Mesh(new THREE.TorusGeometry(0.07, 0.02, 8, 14), trimMat);
+      hole.position.set(0.16, 0.12, 0);
+      group.add(tag, hole);
+    }
+
+    const halo = new THREE.Mesh(
+      new THREE.TorusGeometry(0.44, 0.03, 8, 22),
+      new THREE.MeshBasicMaterial({ color }),
+    );
+    halo.rotation.x = Math.PI / 2;
+    halo.position.y = -0.26;
+    group.add(halo);
+    return group;
+  }
+
   public trySpawnPowerUp(
     x: number,
     y: number,
@@ -265,24 +365,8 @@ export class InteractablesSystem {
     this.powerUpTypeCooldowns.set(chosen, BALANCE.powerUps.perTypeCooldown);
 
     const meta = POWERUP_META[chosen];
-    const group = new THREE.Group();
-    group.position.set(x, y + 0.65, z);
-
-    const core = new THREE.Mesh(
-      new THREE.OctahedronGeometry(0.28, 0),
-      new THREE.MeshStandardMaterial({
-        color: meta.color,
-        emissive: meta.color,
-        emissiveIntensity: 1.6,
-        roughness: 0.25,
-      }),
-    );
-    group.add(core);
-    const ring = new THREE.Mesh(
-      new THREE.TorusGeometry(0.42, 0.035, 8, 20),
-      new THREE.MeshBasicMaterial({ color: meta.color }),
-    );
-    group.add(ring);
+    const group = this.buildPowerUpEmblem(chosen, meta.color);
+    group.position.set(x, y + 0.72, z);
 
     this.scene.add(group);
     this.droppedPowerUps.push({
@@ -290,7 +374,7 @@ export class InteractablesSystem {
       mesh: group,
       color: meta.color,
       x,
-      y: y + 0.65,
+      y: y + 0.72,
       z,
       life: BALANCE.powerUps.lifetime,
     });
@@ -362,28 +446,37 @@ export class InteractablesSystem {
       this.powerUpLight.intensity = 0;
     }
 
-    // Update Supply Crate animation/timer
+    // Update Supply Crate animation/timer with cycling real 3D weapon silhouettes
     const activeCrate = this.map.crateSlots[this.activeCrateSlotIdx]!;
     if (this.crateState === 'rolling') {
       this.crateTimer -= dt;
       activeCrate.lid.rotation.x = THREE.MathUtils.damp(activeCrate.lid.rotation.x, -1.25, 10, dt);
-      this.cratePreviewMesh.visible = true;
-      this.cratePreviewMesh.position.set(
+      const cycleIdx = Math.floor((BALANCE.economy.crate.rollDuration - this.crateTimer) * 8) % CRATE_ROLL_CYCLE.length;
+      const shownId = CRATE_ROLL_CYCLE[cycleIdx]!;
+      for (const [id, mdl] of this.cratePreviewModels) {
+        mdl.visible = id === shownId;
+      }
+      this.cratePreviewGroup.visible = true;
+      this.cratePreviewGroup.position.set(
         activeCrate.position.x,
-        1.15 + Math.sin(performance.now() * 0.01) * 0.08,
+        1.1 + Math.sin(performance.now() * 0.012) * 0.09,
         activeCrate.position.z,
       );
-      this.cratePreviewMesh.rotation.y += dt * 7;
+      this.cratePreviewGroup.rotation.y += dt * 4.5;
       if (this.crateTimer <= 0) {
         this.crateState = 'ready';
         this.crateTimer = BALANCE.economy.crate.takeWindow;
+        for (const [id, mdl] of this.cratePreviewModels) {
+          mdl.visible = id === this.crateOfferedWeapon;
+        }
       }
     } else if (this.crateState === 'ready') {
       this.crateTimer -= dt;
-      this.cratePreviewMesh.rotation.y += dt * 1.5;
+      this.cratePreviewGroup.position.y = 1.15 + Math.sin(performance.now() * 0.004) * 0.04;
+      this.cratePreviewGroup.rotation.y += dt * 1.4;
       if (this.crateTimer <= 0) {
         this.crateState = 'idle';
-        this.cratePreviewMesh.visible = false;
+        this.cratePreviewGroup.visible = false;
         activeCrate.lid.rotation.x = 0;
       }
     } else {
@@ -409,8 +502,14 @@ export class InteractablesSystem {
     if (this.trapState === 'active') {
       this.trapTimer -= dt;
       this.trapDamageTick -= dt;
+      this.trapHumTick -= dt;
       this.map.electricTrapArcs.visible = Math.random() > 0.15;
       this.map.electricTrapLight.intensity = 2.4 + Math.random() * 1.6;
+      if (this.trapHumTick <= 0) {
+        this.trapHumTick = 0.28;
+        const c = this.map.electricTrapCenter;
+        this.audio.playTrapBuzz(c.x, 1.8, c.z);
+      }
       if (this.trapDamageTick <= 0) {
         this.trapDamageTick = 0.25;
         const c = this.map.electricTrapCenter;
@@ -839,6 +938,9 @@ export class InteractablesSystem {
       for (const pl of this.map.poweredLights) {
         pl.intensity = (pl.userData.fullIntensity as number) ?? 2.6;
       }
+      for (const pe of this.map.poweredEmissives) {
+        pe.emissiveIntensity = 1.45;
+      }
       for (const pm of this.map.perkMachines) {
         pm.light.intensity = 1.9;
         pm.emissiveMat.emissiveIntensity = 1.65;
@@ -914,7 +1016,7 @@ export class InteractablesSystem {
     if (id.startsWith('crate_take:')) {
       weapons.giveWeapon(this.crateOfferedWeapon, false);
       this.crateState = 'idle';
-      this.cratePreviewMesh.visible = false;
+      this.cratePreviewGroup.visible = false;
       this.map.crateSlots[this.activeCrateSlotIdx]!.lid.rotation.x = 0;
       this.audio.playBuy(true);
 
@@ -962,6 +1064,7 @@ export class InteractablesSystem {
       this.trapState = 'active';
       this.trapTimer = BALANCE.economy.electricTrap.duration;
       this.trapDamageTick = 0;
+      this.trapHumTick = 0;
       this.audio.playBuy(true);
       return;
     }

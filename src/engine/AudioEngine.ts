@@ -637,6 +637,42 @@ export class AudioEngine {
     src.stop(now + 0.08);
   }
 
+  public playTrapBuzz(x: number, y: number, z: number): void {
+    if (!this.ctx) return;
+    const panner = this.createPanner(x, y, z);
+    if (!panner) return;
+    const now = this.ctx.currentTime;
+    const osc = this.ctx.createOscillator();
+    const g = this.ctx.createGain();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(120 + Math.random() * 40, now);
+    g.gain.setValueAtTime(0.14, now);
+    g.gain.exponentialRampToValueAtTime(0.001, now + 0.24);
+    osc.connect(g);
+    g.connect(panner);
+    osc.start(now);
+    osc.stop(now + 0.25);
+  }
+
+  public playRadioChirp(): void {
+    if (!this.ctx || !this.noiseBuffer) return;
+    const now = this.ctx.currentTime;
+    const src = this.ctx.createBufferSource();
+    src.buffer = this.noiseBuffer;
+    const bp = this.ctx.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.frequency.value = 1850;
+    bp.Q.value = 3.2;
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.1, now);
+    g.gain.exponentialRampToValueAtTime(0.001, now + 0.09);
+    src.connect(bp);
+    bp.connect(g);
+    g.connect(this.voiceGain);
+    src.start(now);
+    src.stop(now + 0.1);
+  }
+
   public dispose(): void {
     try {
       this.droneOscA?.stop();

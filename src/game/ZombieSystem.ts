@@ -9,6 +9,7 @@ import {
 } from '../config/balance';
 import type { AudioEngine } from '../engine/AudioEngine';
 import type { NavGrid } from '../engine/NavGrid';
+import type { PbrMaterialSet } from '../engine/ProceduralAssets';
 import type { SpawnPoint, WindowBarricade } from './MapBuilder';
 import type { SeededRng } from './types';
 
@@ -56,6 +57,7 @@ interface ZombieEntity {
   hitReactDirZ: number;
   staggerTimer: number;
   isCrawler: boolean;
+  woundedShown: boolean;
 
   x: number;
   y: number;
@@ -77,27 +79,53 @@ interface ZombieEntity {
   corpseTimer: number;
   dissolveUniform: { value: number };
 
-  // Visual rig
+  // Visual rigs
   root: THREE.Group;
   bodyGroup: THREE.Group;
+  humanoidGroup: THREE.Group;
+  houndGroup: THREE.Group;
   headMesh: THREE.Mesh;
   torsoMesh: THREE.Mesh;
   leftArm: THREE.Group;
   rightArm: THREE.Group;
   leftLeg: THREE.Group;
   rightLeg: THREE.Group;
-  weakPointMesh: THREE.Mesh | null;
+  houndLegs: [THREE.Group, THREE.Group, THREE.Group, THREE.Group];
+  houndHead: THREE.Group;
+  weakPointMesh: THREE.Mesh;
+  bruteGearGroup: THREE.Group;
+  bloaterCystsGroup: THREE.Group;
+  fungalGrowthMesh: THREE.Mesh;
+  eyesMesh: THREE.Mesh;
+  bloodWoundMesh: THREE.Mesh;
   hitboxMeshes: THREE.Mesh[];
-  baseMaterials: [THREE.MeshStandardMaterial, THREE.MeshStandardMaterial, THREE.MeshStandardMaterial, THREE.MeshStandardMaterial];
-  dissolveMaterials: [THREE.MeshStandardMaterial, THREE.MeshStandardMaterial, THREE.MeshStandardMaterial, THREE.MeshStandardMaterial] | null;
-  torsoSubMeshes: { head: THREE.Mesh; torso: THREE.Mesh; blood: THREE.Mesh; la: THREE.Mesh; ra: THREE.Mesh; ll: THREE.Mesh; rl: THREE.Mesh };
+  baseMaterials: [
+    THREE.MeshStandardMaterial,
+    THREE.MeshStandardMaterial,
+    THREE.MeshStandardMaterial,
+    THREE.MeshStandardMaterial,
+  ];
+  dissolveMaterials:
+    | [
+        THREE.MeshStandardMaterial,
+        THREE.MeshStandardMaterial,
+        THREE.MeshStandardMaterial,
+        THREE.MeshStandardMaterial,
+      ]
+    | null;
+  rigMeshes: {
+    skinMeshes: THREE.Mesh[];
+    clothMeshes: THREE.Mesh[];
+    pantsMeshes: THREE.Mesh[];
+    bloodMeshes: THREE.Mesh[];
+    houndMeshes: THREE.Mesh[];
+  };
   animPhase: number;
+  spawnFogTimer: number;
+  spawnFogRing: THREE.Mesh;
 }
 
 const MAX_ZOMBIES = BALANCE.rounds.maxAlive;
-
-const SHIRT_PALETTE = [0x3b4d3e, 0x32404d, 0x5c4738, 0x4b4b48, 0x623b3b, 0x3b394a];
-const SKIN_PALETTE = [0x6e7868, 0x5e695c, 0x767a6b, 0x586259, 0x6b6f60, 0x616d62];
 
 export class ZombieSystem {
   public readonly entities: ZombieEntity[] = [];
@@ -106,6 +134,7 @@ export class ZombieSystem {
   private readonly scene: THREE.Scene;
   private readonly nav: NavGrid;
   private readonly audio: AudioEngine;
+  private readonly mats: PbrMaterialSet;
   private readonly isSoftwareGl: boolean;
 
   private readonly posX = new Float32Array(MAX_ZOMBIES);
@@ -120,74 +149,261 @@ export class ZombieSystem {
   private nextZombieId = 1;
   private aiFrameCounter = 0;
 
-  // Shared geometries to minimize draw/memory overhead
-  private readonly headGeo = new THREE.BoxGeometry(0.28, 0.3, 0.28);
-  private readonly torsoGeo = new THREE.BoxGeometry(0.48, 0.62, 0.28);
-  private readonly armGeo = new THREE.BoxGeometry(0.14, 0.56, 0.14);
-  private readonly legGeo = new THREE.BoxGeometry(0.18, 0.64, 0.18);
+  // Shared sculpted geometries
+  private readonly headGeo = ZombieSystem.buildHeadGeo();
+  private readonly torsoGeo = ZombieSystem.buildTorsoGeo();
+  private readonly armGeo = ZombieSystem.buildArmGeo();
+  private readonly legGeo = ZombieSystem.buildLegGeo();
   private readonly eyesGeo = ZombieSystem.buildEyesGeo();
-  private readonly eyeMat = new THREE.MeshBasicMaterial({ color: 0xfacc15 });
+  private readonly houndBodyGeo = ZombieSystem.buildHoundBodyGeo();
+  private readonly houndHeadGeo = ZombieSystem.buildHoundHeadGeo();
+  private readonly houndLegGeo = ZombieSystem.buildHoundLegGeo();
+  private readonly houndEyesGeo = ZombieSystem.buildHoundEyesGeo();
+
+  private readonly eyeMat = new THREE.MeshBasicMaterial({ color: 0xfde047 });
   private readonly houndEyeMat = new THREE.MeshBasicMaterial({ color: 0xef4444 });
-  private readonly bloaterEyeMat = new THREE.MeshBasicMaterial({ color: 0x84cc16 });
+  private readonly bloaterEyeMat = new THREE.MeshBasicMaterial({ color: 0xa3e635 });
 
-  private static buildEyesGeo(): THREE.BufferGeometry {
-    const left = new THREE.BoxGeometry(0.05, 0.035, 0.03);
-    left.translate(-0.06, 0.03, 0.145);
-    const right = new THREE.BoxGeometry(0.05, 0.035, 0.03);
-    right.translate(0.06, 0.03, 0.145);
-    const merged = mergeGeometries([left, right]);
-    left.dispose();
-    right.dispose();
-    return merged ?? new THREE.BoxGeometry(0.14, 0.035, 0.03);
-  }
-
-  private readonly variantSkins: THREE.MeshStandardMaterial[] = [];
-  private readonly variantCloths: THREE.MeshStandardMaterial[] = [];
-  private sharedPantsMat!: THREE.MeshStandardMaterial;
-  private sharedBloodMat!: THREE.MeshStandardMaterial;
-  private readonly specialSkinMat = new THREE.MeshStandardMaterial({ color: 0x3a2b28, roughness: 0.72, metalness: 0.08 });
-  private readonly specialClothMat = new THREE.MeshStandardMaterial({ color: 0x281e1c, roughness: 0.85, metalness: 0.08 });
-  private readonly bloaterSkinMat = new THREE.MeshStandardMaterial({ color: 0x637846, roughness: 0.72, metalness: 0.08 });
-  private readonly bloaterClothMat = new THREE.MeshStandardMaterial({ color: 0x4b5c34, roughness: 0.85, metalness: 0.08 });
-  private readonly bruteSkinMat = new THREE.MeshStandardMaterial({ color: 0x454549, roughness: 0.72, metalness: 0.08 });
-  private readonly bruteClothMat = new THREE.MeshStandardMaterial({ color: 0x27272a, roughness: 0.85, metalness: 0.08 });
+  private readonly houndSkinMat = new THREE.MeshStandardMaterial({
+    color: 0x3b2926,
+    roughness: 0.72,
+    metalness: 0.08,
+  });
+  private readonly bloaterSkinMat = new THREE.MeshStandardMaterial({
+    color: 0x627a44,
+    roughness: 0.65,
+    metalness: 0.08,
+  });
+  private readonly bloaterClothMat = new THREE.MeshStandardMaterial({
+    color: 0x455432,
+    roughness: 0.85,
+    metalness: 0.08,
+  });
+  private readonly bloaterCystMat = new THREE.MeshStandardMaterial({
+    color: 0x84cc16,
+    emissive: 0x4d7c0f,
+    emissiveIntensity: 0.9,
+    roughness: 0.35,
+  });
+  private readonly bruteSkinMat = new THREE.MeshStandardMaterial({
+    color: 0x44454a,
+    roughness: 0.68,
+    metalness: 0.12,
+  });
+  private readonly bruteArmorMat = new THREE.MeshStandardMaterial({
+    color: 0x232528,
+    roughness: 0.45,
+    metalness: 0.65,
+  });
+  private readonly fungalGrowthMat = new THREE.MeshStandardMaterial({
+    color: 0xd97706,
+    emissive: 0x92400e,
+    emissiveIntensity: 0.65,
+    roughness: 0.65,
+  });
 
   constructor(
     scene: THREE.Scene,
     nav: NavGrid,
     audio: AudioEngine,
+    mats: PbrMaterialSet,
     isSoftwareGl: boolean,
   ) {
     this.scene = scene;
     this.nav = nav;
     this.audio = audio;
+    this.mats = mats;
     this.isSoftwareGl = isSoftwareGl;
     this.allocatePool();
   }
 
-  private allocatePool(): void {
-    this.armGeo.translate(0, -0.24, 0);
-    this.legGeo.translate(0, -0.3, 0);
+  private static buildHeadGeo(): THREE.BufferGeometry {
+    const cranium = new THREE.SphereGeometry(0.145, 10, 8);
+    cranium.scale(0.92, 1.08, 1.02);
+    cranium.translate(0, 0.04, 0);
 
-    for (let v = 0; v < 6; v++) {
-      this.variantSkins.push(
-        new THREE.MeshStandardMaterial({ color: SKIN_PALETTE[v]!, roughness: 0.72, metalness: 0.08 }),
-      );
-      this.variantCloths.push(
-        new THREE.MeshStandardMaterial({ color: SHIRT_PALETTE[v]!, roughness: 0.85, metalness: 0.08 }),
-      );
-    }
-    this.sharedPantsMat = new THREE.MeshStandardMaterial({ color: 0x282b2e, roughness: 0.88, metalness: 0.08 });
-    this.sharedBloodMat = new THREE.MeshStandardMaterial({ color: 0x521010, roughness: 0.35, metalness: 0.08 });
+    const jaw = new THREE.CylinderGeometry(0.095, 0.072, 0.13, 8);
+    jaw.scale(1.0, 1.0, 1.08);
+    jaw.translate(0, -0.07, 0.025);
+
+    const brow = new THREE.BoxGeometry(0.21, 0.045, 0.08);
+    brow.translate(0, 0.06, 0.1);
+
+    const merged = mergeGeometries([cranium, jaw, brow]);
+    cranium.dispose();
+    jaw.dispose();
+    brow.dispose();
+    return merged ?? new THREE.SphereGeometry(0.15, 8, 8);
+  }
+
+  private static buildTorsoGeo(): THREE.BufferGeometry {
+    const chest = new THREE.CylinderGeometry(0.24, 0.18, 0.42, 10);
+    chest.scale(1.12, 1.0, 0.7);
+    chest.translate(0, 0.1, 0);
+
+    const pelvis = new THREE.CylinderGeometry(0.185, 0.195, 0.24, 10);
+    pelvis.scale(1.08, 1.0, 0.72);
+    pelvis.translate(0, -0.2, 0);
+
+    const shoulderBar = new THREE.CylinderGeometry(0.08, 0.08, 0.56, 8);
+    shoulderBar.rotateZ(Math.PI / 2);
+    shoulderBar.translate(0, 0.25, -0.01);
+
+    const merged = mergeGeometries([chest, pelvis, shoulderBar]);
+    chest.dispose();
+    pelvis.dispose();
+    shoulderBar.dispose();
+    return merged ?? new THREE.CylinderGeometry(0.22, 0.18, 0.62, 10);
+  }
+
+  private static buildArmGeo(): THREE.BufferGeometry {
+    const shoulder = new THREE.SphereGeometry(0.075, 8, 6);
+    const upper = new THREE.CylinderGeometry(0.065, 0.052, 0.28, 8);
+    upper.translate(0, -0.14, 0);
+    const forearm = new THREE.CylinderGeometry(0.052, 0.042, 0.27, 8);
+    forearm.rotateX(-0.22);
+    forearm.translate(0, -0.39, 0.03);
+    const hand = new THREE.BoxGeometry(0.075, 0.1, 0.06);
+    hand.rotateX(-0.22);
+    hand.translate(0, -0.54, 0.06);
+
+    const merged = mergeGeometries([shoulder, upper, forearm, hand]);
+    shoulder.dispose();
+    upper.dispose();
+    forearm.dispose();
+    hand.dispose();
+    return merged ?? new THREE.CylinderGeometry(0.06, 0.05, 0.54, 8);
+  }
+
+  private static buildLegGeo(): THREE.BufferGeometry {
+    const thigh = new THREE.CylinderGeometry(0.095, 0.075, 0.34, 8);
+    thigh.translate(0, -0.17, 0);
+    const shin = new THREE.CylinderGeometry(0.072, 0.055, 0.32, 8);
+    shin.translate(0, -0.49, 0);
+    const boot = new THREE.BoxGeometry(0.11, 0.09, 0.21);
+    boot.translate(0, -0.64, 0.045);
+
+    const merged = mergeGeometries([thigh, shin, boot]);
+    thigh.dispose();
+    shin.dispose();
+    boot.dispose();
+    return merged ?? new THREE.CylinderGeometry(0.08, 0.06, 0.64, 8);
+  }
+
+  private static buildEyesGeo(): THREE.BufferGeometry {
+    const left = new THREE.SphereGeometry(0.022, 6, 6);
+    left.scale(1.2, 0.75, 0.6);
+    left.translate(-0.052, 0.025, 0.135);
+    const right = new THREE.SphereGeometry(0.022, 6, 6);
+    right.scale(1.2, 0.75, 0.6);
+    right.translate(0.052, 0.025, 0.135);
+    const merged = mergeGeometries([left, right]);
+    left.dispose();
+    right.dispose();
+    return merged ?? new THREE.BoxGeometry(0.14, 0.03, 0.03);
+  }
+
+  private static buildHoundBodyGeo(): THREE.BufferGeometry {
+    const ribcage = new THREE.CylinderGeometry(0.22, 0.16, 0.56, 9);
+    ribcage.rotateX(Math.PI / 2);
+    ribcage.scale(0.88, 1.08, 1.0);
+    ribcage.translate(0, 0.03, 0.14);
+
+    const abdomen = new THREE.CylinderGeometry(0.15, 0.17, 0.44, 8);
+    abdomen.rotateX(Math.PI / 2);
+    abdomen.scale(0.82, 0.92, 1.0);
+    abdomen.translate(0, 0.01, -0.26);
+
+    const neck = new THREE.CylinderGeometry(0.11, 0.15, 0.28, 8);
+    neck.rotateX(0.95);
+    neck.translate(0, 0.14, 0.44);
+
+    const tail = new THREE.ConeGeometry(0.045, 0.34, 6);
+    tail.rotateX(-1.15);
+    tail.translate(0, 0.09, -0.58);
+
+    const spineA = new THREE.ConeGeometry(0.035, 0.11, 5);
+    spineA.translate(0, 0.22, 0.12);
+    const spineB = new THREE.ConeGeometry(0.03, 0.1, 5);
+    spineB.translate(0, 0.2, -0.06);
+    const spineC = new THREE.ConeGeometry(0.028, 0.09, 5);
+    spineC.translate(0, 0.18, -0.24);
+
+    const merged = mergeGeometries([ribcage, abdomen, neck, tail, spineA, spineB, spineC]);
+    ribcage.dispose();
+    abdomen.dispose();
+    neck.dispose();
+    tail.dispose();
+    spineA.dispose();
+    spineB.dispose();
+    spineC.dispose();
+    return merged ?? new THREE.BoxGeometry(0.32, 0.32, 0.85);
+  }
+
+  private static buildHoundHeadGeo(): THREE.BufferGeometry {
+    const skull = new THREE.SphereGeometry(0.135, 8, 7);
+    skull.scale(0.92, 0.88, 1.15);
+
+    const snout = new THREE.CylinderGeometry(0.055, 0.088, 0.24, 7);
+    snout.rotateX(Math.PI / 2);
+    snout.translate(0, -0.02, 0.18);
+
+    const earL = new THREE.ConeGeometry(0.038, 0.12, 5);
+    earL.rotateZ(0.28);
+    earL.translate(-0.085, 0.12, -0.02);
+
+    const earR = new THREE.ConeGeometry(0.038, 0.12, 5);
+    earR.rotateZ(-0.28);
+    earR.translate(0.085, 0.12, -0.02);
+
+    const merged = mergeGeometries([skull, snout, earL, earR]);
+    skull.dispose();
+    snout.dispose();
+    earL.dispose();
+    earR.dispose();
+    return merged ?? new THREE.BoxGeometry(0.22, 0.2, 0.34);
+  }
+
+  private static buildHoundLegGeo(): THREE.BufferGeometry {
+    const upper = new THREE.CylinderGeometry(0.06, 0.045, 0.25, 7);
+    upper.rotateX(0.24);
+    upper.translate(0, -0.11, -0.02);
+
+    const lower = new THREE.CylinderGeometry(0.042, 0.03, 0.27, 7);
+    lower.rotateX(-0.22);
+    lower.translate(0, -0.34, 0.01);
+
+    const paw = new THREE.BoxGeometry(0.07, 0.05, 0.11);
+    paw.translate(0, -0.47, 0.04);
+
+    const merged = mergeGeometries([upper, lower, paw]);
+    upper.dispose();
+    lower.dispose();
+    paw.dispose();
+    return merged ?? new THREE.BoxGeometry(0.09, 0.45, 0.09);
+  }
+
+  private static buildHoundEyesGeo(): THREE.BufferGeometry {
+    const l = new THREE.SphereGeometry(0.02, 6, 5);
+    l.translate(-0.055, 0.035, 0.11);
+    const r = new THREE.SphereGeometry(0.02, 6, 5);
+    r.translate(0.055, 0.035, 0.11);
+    const merged = mergeGeometries([l, r]);
+    l.dispose();
+    r.dispose();
+    return merged ?? new THREE.BoxGeometry(0.12, 0.03, 0.03);
+  }
+
+  private allocatePool(): void {
+    const skinCount = this.mats.zombieSkins.length;
+    const clothCount = this.mats.zombieCloths.length;
 
     for (let i = 0; i < MAX_ZOMBIES; i++) {
-      const variant = i % 6;
+      const skinMat = this.mats.zombieSkins[i % skinCount]!;
+      const clothMat = this.mats.zombieCloths[i % clothCount]!;
+      const pantsMat = this.mats.zombiePants;
+      const bloodMat = this.mats.zombieBlood;
       const dissolveUniform = { value: 0 };
-
-      const skinMat = this.variantSkins[variant]!;
-      const clothMat = this.variantCloths[variant]!;
-      const pantsMat = this.sharedPantsMat;
-      const bloodMat = this.sharedBloodMat;
 
       const root = new THREE.Group();
       root.visible = false;
@@ -195,73 +411,194 @@ export class ZombieSystem {
       const bodyGroup = new THREE.Group();
       root.add(bodyGroup);
 
+      // =====================================================
+      // A. SCULPTED HUMANOID RIG (Shambler, Bloater, Brute)
+      // =====================================================
+      const humanoidGroup = new THREE.Group();
+      bodyGroup.add(humanoidGroup);
+
       const torsoMesh = new THREE.Mesh(this.torsoGeo, clothMat);
       torsoMesh.position.y = 1.02;
       torsoMesh.castShadow = !this.isSoftwareGl;
       torsoMesh.userData = { poolIdx: i, hitZone: 'torso' as HitZone };
-      bodyGroup.add(torsoMesh);
+      humanoidGroup.add(torsoMesh);
 
-      // Bloodied apron/chest patch for variant readability
-      const bloodPatch = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.34, 0.295), bloodMat);
-      bloodPatch.position.set((variant % 2 === 0 ? 1 : -1) * 0.04, 0.04, 0);
-      torsoMesh.add(bloodPatch);
+      // Torn bloodied chest/shoulder gash & dynamic low-health wound patch
+      const chestBlood = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.28, 0.34), bloodMat);
+      chestBlood.position.set((i % 2 === 0 ? 1 : -1) * 0.05, 0.04, 0.01);
+      chestBlood.rotation.z = i % 2 === 0 ? 0.18 : -0.18;
+      torsoMesh.add(chestBlood);
 
-      // Head + faint glowing yellow eyes
+      const bloodWoundMesh = new THREE.Mesh(new THREE.SphereGeometry(0.15, 7, 7), bloodMat);
+      bloodWoundMesh.scale.set(1.2, 1.3, 0.5);
+      bloodWoundMesh.position.set(-0.04, 0.08, 0.14);
+      bloodWoundMesh.visible = false;
+      torsoMesh.add(bloodWoundMesh);
+
+      // Fungal Bloom outgrowth on shoulder/head for visual variety
+      const fungalGrowthMesh = new THREE.Mesh(new THREE.DodecahedronGeometry(0.11, 0), this.fungalGrowthMat);
+      fungalGrowthMesh.position.set(i % 2 === 0 ? 0.2 : -0.2, 0.28, 0.02);
+      torsoMesh.add(fungalGrowthMesh);
+
+      // Head + glowing eyes
       const headMesh = new THREE.Mesh(this.headGeo, skinMat);
-      headMesh.position.set(0, 1.5, 0.02);
+      headMesh.position.set(0, 1.48, 0.03);
       headMesh.castShadow = !this.isSoftwareGl;
       headMesh.userData = { poolIdx: i, hitZone: 'head' as HitZone };
-      bodyGroup.add(headMesh);
+      humanoidGroup.add(headMesh);
 
       const eyesMesh = new THREE.Mesh(this.eyesGeo, this.eyeMat);
       headMesh.add(eyesMesh);
 
-      // Weakpoint mesh (visible only on Brute)
+      // Brute armored pauldrons & chest plate + glowing back weakpoint canister
+      const bruteGearGroup = new THREE.Group();
+      bruteGearGroup.visible = false;
+      const pauldronL = new THREE.Mesh(new THREE.SphereGeometry(0.16, 8, 6), this.bruteArmorMat);
+      pauldronL.scale.set(1.1, 0.85, 1.1);
+      pauldronL.position.set(-0.32, 1.3, 0);
+      const pauldronR = pauldronL.clone();
+      pauldronR.position.x = 0.32;
+      const chestRig = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.38, 0.36), this.bruteArmorMat);
+      chestRig.position.set(0, 1.1, 0.02);
+      const hornA = new THREE.Mesh(new THREE.ConeGeometry(0.045, 0.2, 6), this.fungalGrowthMat);
+      hornA.position.set(-0.09, 1.66, 0.03);
+      hornA.rotation.z = 0.35;
+      const hornB = hornA.clone();
+      hornB.position.x = 0.09;
+      hornB.rotation.z = -0.35;
+      bruteGearGroup.add(pauldronL, pauldronR, chestRig, hornA, hornB);
+      humanoidGroup.add(bruteGearGroup);
+
       const weakPointMesh = new THREE.Mesh(
-        new THREE.SphereGeometry(0.19, 8, 8),
+        new THREE.CylinderGeometry(0.14, 0.14, 0.32, 10),
         new THREE.MeshStandardMaterial({
           color: 0xf97316,
           emissive: 0xea580c,
-          emissiveIntensity: 1.4,
-          roughness: 0.4,
+          emissiveIntensity: 1.5,
+          roughness: 0.35,
         }),
       );
-      weakPointMesh.position.set(0, 1.12, -0.22);
+      weakPointMesh.position.set(0, 1.14, -0.24);
       weakPointMesh.visible = false;
       weakPointMesh.userData = { poolIdx: i, hitZone: 'back_weakpoint' as HitZone };
-      bodyGroup.add(weakPointMesh);
+      humanoidGroup.add(weakPointMesh);
+
+      // Bloater toxic pustules cluster
+      const bloaterCystsGroup = new THREE.Group();
+      bloaterCystsGroup.visible = false;
+      const cystOffsets = [
+        [0.14, 1.05, 0.17, 0.16],
+        [-0.12, 0.92, 0.18, 0.18],
+        [0.02, 1.18, 0.15, 0.14],
+        [0.16, 1.24, -0.12, 0.14],
+        [-0.15, 1.0, -0.15, 0.17],
+      ] as const;
+      for (const [cx, cy, cz, rad] of cystOffsets) {
+        const cyst = new THREE.Mesh(new THREE.SphereGeometry(rad, 8, 7), this.bloaterCystMat);
+        cyst.position.set(cx, cy, cz);
+        bloaterCystsGroup.add(cyst);
+      }
+      humanoidGroup.add(bloaterCystsGroup);
 
       // Arms
       const leftArm = new THREE.Group();
-      leftArm.position.set(-0.32, 1.24, 0);
+      leftArm.position.set(-0.3, 1.26, 0);
       const laMesh = new THREE.Mesh(this.armGeo, skinMat);
       laMesh.userData = { poolIdx: i, hitZone: 'limb' as HitZone };
-      leftArm.add(laMesh);
-      bodyGroup.add(leftArm);
+      const laSleeve = new THREE.Mesh(new THREE.CylinderGeometry(0.072, 0.068, 0.18, 8), clothMat);
+      laSleeve.position.y = -0.09;
+      leftArm.add(laMesh, laSleeve);
+      humanoidGroup.add(leftArm);
 
       const rightArm = new THREE.Group();
-      rightArm.position.set(0.32, 1.24, 0);
+      rightArm.position.set(0.3, 1.26, 0);
       const raMesh = new THREE.Mesh(this.armGeo, skinMat);
       raMesh.userData = { poolIdx: i, hitZone: 'limb' as HitZone };
-      rightArm.add(raMesh);
-      bodyGroup.add(rightArm);
+      const raSleeve = new THREE.Mesh(new THREE.CylinderGeometry(0.072, 0.068, 0.18, 8), clothMat);
+      raSleeve.position.y = -0.09;
+      rightArm.add(raMesh, raSleeve);
+      humanoidGroup.add(rightArm);
 
       // Legs
       const leftLeg = new THREE.Group();
-      leftLeg.position.set(-0.14, 0.68, 0);
+      leftLeg.position.set(-0.13, 0.72, 0);
       const llMesh = new THREE.Mesh(this.legGeo, pantsMat);
       llMesh.userData = { poolIdx: i, hitZone: 'limb' as HitZone };
       leftLeg.add(llMesh);
-      bodyGroup.add(leftLeg);
+      humanoidGroup.add(leftLeg);
 
       const rightLeg = new THREE.Group();
-      rightLeg.position.set(0.14, 0.68, 0);
+      rightLeg.position.set(0.13, 0.72, 0);
       const rlMesh = new THREE.Mesh(this.legGeo, pantsMat);
       rlMesh.userData = { poolIdx: i, hitZone: 'limb' as HitZone };
       rightLeg.add(rlMesh);
-      bodyGroup.add(rightLeg);
+      humanoidGroup.add(rightLeg);
 
-      const hitboxMeshes = [headMesh, torsoMesh, laMesh, raMesh, llMesh, rlMesh, weakPointMesh];
+      // =====================================================
+      // B. TRUE QUADRUPED HOUND RIG
+      // =====================================================
+      const houndGroup = new THREE.Group();
+      houndGroup.visible = false;
+      bodyGroup.add(houndGroup);
+
+      const hBody = new THREE.Mesh(this.houndBodyGeo, this.houndSkinMat);
+      hBody.position.set(0, 0.52, 0);
+      hBody.castShadow = !this.isSoftwareGl;
+      hBody.userData = { poolIdx: i, hitZone: 'torso' as HitZone };
+      houndGroup.add(hBody);
+
+      const houndHead = new THREE.Group();
+      houndHead.position.set(0, 0.66, 0.52);
+      const hHeadMesh = new THREE.Mesh(this.houndHeadGeo, this.houndSkinMat);
+      hHeadMesh.userData = { poolIdx: i, hitZone: 'head' as HitZone };
+      const hEyes = new THREE.Mesh(this.houndEyesGeo, this.houndEyeMat);
+      houndHead.add(hHeadMesh, hEyes);
+      houndGroup.add(houndHead);
+
+      const houndLegCoords = [
+        [-0.14, 0.48, 0.28],
+        [0.14, 0.48, 0.28],
+        [-0.14, 0.48, -0.3],
+        [0.14, 0.48, -0.3],
+      ] as const;
+      const houndLegs = houndLegCoords.map(([lx, ly, lz]) => {
+        const lg = new THREE.Group();
+        lg.position.set(lx, ly, lz);
+        const lm = new THREE.Mesh(this.houndLegGeo, this.houndSkinMat);
+        lm.userData = { poolIdx: i, hitZone: 'limb' as HitZone };
+        lg.add(lm);
+        houndGroup.add(lg);
+        return lg;
+      }) as [THREE.Group, THREE.Group, THREE.Group, THREE.Group];
+
+      // Spawn ground fog burst ring (used when Hounds emerge)
+      const spawnFogRing = new THREE.Mesh(
+        new THREE.RingGeometry(0.35, 1.05, 16),
+        new THREE.MeshBasicMaterial({
+          color: 0xa3e635,
+          transparent: true,
+          opacity: 0,
+          side: THREE.DoubleSide,
+          depthWrite: false,
+        }),
+      );
+      spawnFogRing.rotation.x = -Math.PI / 2;
+      spawnFogRing.position.y = 0.06;
+      spawnFogRing.visible = false;
+      root.add(spawnFogRing);
+
+      const hitboxMeshes = [
+        headMesh,
+        torsoMesh,
+        laMesh,
+        raMesh,
+        llMesh,
+        rlMesh,
+        weakPointMesh,
+        hBody,
+        hHeadMesh,
+        ...(houndLegs.map((lg) => lg.children[0] as THREE.Mesh)),
+      ];
       this.allHitboxes.push(...hitboxMeshes);
 
       this.scene.add(root);
@@ -278,13 +615,14 @@ export class ZombieSystem {
         stateTimer: 0,
         attackCooldown: 0,
         attackDealt: false,
-        chargeCooldown: 0,
+        chargeCooldown: 4,
         groanTimer: 2,
         hitReactTimer: 0,
         hitReactDirX: 0,
         hitReactDirZ: 0,
         staggerTimer: 0,
         isCrawler: false,
+        woundedShown: false,
         x: 0,
         y: 0,
         z: 0,
@@ -300,39 +638,50 @@ export class ZombieSystem {
         dissolveUniform,
         root,
         bodyGroup,
+        humanoidGroup,
+        houndGroup,
         headMesh,
         torsoMesh,
         leftArm,
         rightArm,
         leftLeg,
         rightLeg,
+        houndLegs,
+        houndHead,
         weakPointMesh,
+        bruteGearGroup,
+        bloaterCystsGroup,
+        fungalGrowthMesh,
+        eyesMesh,
+        bloodWoundMesh,
         hitboxMeshes,
         baseMaterials: [skinMat, clothMat, pantsMat, bloodMat],
         dissolveMaterials: null,
-        torsoSubMeshes: {
-          head: headMesh,
-          torso: torsoMesh,
-          blood: bloodPatch,
-          la: laMesh,
-          ra: raMesh,
-          ll: llMesh,
-          rl: rlMesh,
+        rigMeshes: {
+          skinMeshes: [headMesh, laMesh, raMesh],
+          clothMeshes: [torsoMesh, laSleeve, raSleeve],
+          pantsMeshes: [llMesh, rlMesh],
+          bloodMeshes: [chestBlood, bloodWoundMesh],
+          houndMeshes: [hBody, hHeadMesh, ...(houndLegs.map((lg) => lg.children[0] as THREE.Mesh))],
         },
         animPhase: i * 1.13,
+        spawnFogTimer: 0,
+        spawnFogRing,
       });
     }
   }
 
   private createDissolveMaterial(
-    colorHex: number,
-    roughness: number,
+    srcMat: THREE.MeshStandardMaterial,
     dissolveUniform: { value: number },
   ): THREE.MeshStandardMaterial {
     const mat = new THREE.MeshStandardMaterial({
-      color: colorHex,
-      roughness,
-      metalness: 0.08,
+      color: srcMat.color.getHex(),
+      map: srcMat.map,
+      normalMap: srcMat.normalMap,
+      roughnessMap: srcMat.roughnessMap,
+      roughness: srcMat.roughness,
+      metalness: srcMat.metalness,
     });
     mat.onBeforeCompile = (shader) => {
       shader.uniforms.uDissolve = dissolveUniform;
@@ -356,7 +705,7 @@ export class ZombieSystem {
            }`,
         );
     };
-    mat.customProgramCacheKey = () => 'zombie_dissolve';
+    mat.customProgramCacheKey = () => `zombie_dissolve_${srcMat.map ? 'tex' : 'flat'}`;
     return mat;
   }
 
@@ -426,6 +775,7 @@ export class ZombieSystem {
     slot.health = hp;
     slot.maxHealth = hp;
     slot.isCrawler = false;
+    slot.woundedShown = false;
     slot.dissolveUniform.value = 0;
     slot.corpseTimer = 0;
     slot.attackCooldown = 0;
@@ -444,37 +794,56 @@ export class ZombieSystem {
     slot.lastProgressZ = slot.z;
     slot.stuckTimer = 0;
 
-    // Configure visual proportions per enemy type
-    slot.weakPointMesh!.visible = type === 'brute';
+    // Reset rig transforms
     slot.leftLeg.visible = true;
     slot.rightLeg.visible = true;
+    slot.bloodWoundMesh.visible = false;
     slot.bodyGroup.position.set(0, 0, 0);
     slot.bodyGroup.rotation.set(0, 0, 0);
 
     if (type === 'hound') {
-      slot.root.scale.set(0.78, 0.56, 1.35);
-      slot.bodyGroup.rotation.x = 0.72;
-      slot.baseMaterials[0] = this.specialSkinMat;
-      slot.baseMaterials[1] = this.specialClothMat;
-      (slot.headMesh.children[0] as THREE.Mesh).material = this.houndEyeMat;
-    } else if (type === 'bloater') {
-      slot.root.scale.set(1.42, 1.06, 1.48);
-      slot.baseMaterials[0] = this.bloaterSkinMat;
-      slot.baseMaterials[1] = this.bloaterClothMat;
-      (slot.headMesh.children[0] as THREE.Mesh).material = this.bloaterEyeMat;
-    } else if (type === 'brute') {
-      slot.root.scale.set(1.48, 1.38, 1.45);
-      slot.baseMaterials[0] = this.bruteSkinMat;
-      slot.baseMaterials[1] = this.bruteClothMat;
-      (slot.headMesh.children[0] as THREE.Mesh).material = this.houndEyeMat;
+      slot.humanoidGroup.visible = false;
+      slot.houndGroup.visible = true;
+      slot.bruteGearGroup.visible = false;
+      slot.bloaterCystsGroup.visible = false;
+      slot.weakPointMesh.visible = false;
+      slot.root.scale.set(1.0, 1.0, 1.0);
+      slot.spawnFogTimer = 0.75;
+      slot.spawnFogRing.visible = true;
+      slot.baseMaterials[0] = this.houndSkinMat;
+      this.applyHoundMaterial(slot, this.houndSkinMat);
     } else {
-      const variant = (slot.id + Math.floor(rng.next() * 6)) % 6;
-      slot.root.scale.set(1, 0.96 + rng.next() * 0.08, 1);
-      slot.baseMaterials[0] = this.variantSkins[variant]!;
-      slot.baseMaterials[1] = this.variantCloths[variant]!;
-      (slot.headMesh.children[0] as THREE.Mesh).material = this.eyeMat;
+      slot.humanoidGroup.visible = true;
+      slot.houndGroup.visible = false;
+      slot.spawnFogTimer = 0;
+      slot.spawnFogRing.visible = false;
+
+      slot.weakPointMesh.visible = type === 'brute';
+      slot.bruteGearGroup.visible = type === 'brute';
+      slot.bloaterCystsGroup.visible = type === 'bloater';
+      slot.fungalGrowthMesh.visible = type === 'shambler' && slot.id % 2 === 0;
+
+      if (type === 'bloater') {
+        slot.root.scale.set(1.36, 1.04, 1.38);
+        slot.baseMaterials[0] = this.bloaterSkinMat;
+        slot.baseMaterials[1] = this.bloaterClothMat;
+        slot.eyesMesh.material = this.bloaterEyeMat;
+      } else if (type === 'brute') {
+        slot.root.scale.set(1.38, 1.36, 1.36);
+        slot.baseMaterials[0] = this.bruteSkinMat;
+        slot.baseMaterials[1] = this.bruteArmorMat;
+        slot.eyesMesh.material = this.houndEyeMat;
+      } else {
+        const skinVar = (slot.id + Math.floor(rng.next() * 3)) % this.mats.zombieSkins.length;
+        const clothVar = (slot.id + Math.floor(rng.next() * 6)) % this.mats.zombieCloths.length;
+        const hScale = 0.95 + rng.next() * 0.1;
+        slot.root.scale.set(0.98 + rng.next() * 0.08, hScale, 1.0);
+        slot.baseMaterials[0] = this.mats.zombieSkins[skinVar]!;
+        slot.baseMaterials[1] = this.mats.zombieCloths[clothVar]!;
+        slot.eyesMesh.material = this.eyeMat;
+      }
+      this.applyMaterialsToRig(slot, slot.baseMaterials);
     }
-    this.applyMaterialsToRig(slot, slot.baseMaterials);
 
     if (spawnPoint.windowId && type !== 'hound') {
       slot.windowId = spawnPoint.windowId;
@@ -486,6 +855,15 @@ export class ZombieSystem {
 
     slot.root.position.set(slot.x, slot.y, slot.z);
     slot.root.visible = true;
+    return true;
+  }
+
+  private static isVisibleInHierarchy(obj: THREE.Object3D): boolean {
+    let cur: THREE.Object3D | null = obj;
+    while (cur) {
+      if (!cur.visible) return false;
+      cur = cur.parent;
+    }
     return true;
   }
 
@@ -509,7 +887,7 @@ export class ZombieSystem {
       if (poolIdx === undefined) continue;
       const ent = this.entities[poolIdx];
       if (!ent || !ent.active || ent.state === 'dying' || ent.state === 'dead') continue;
-      if (!h.object.visible) continue;
+      if (!ZombieSystem.isVisibleInHierarchy(h.object)) continue;
       return {
         poolIdx,
         hitZone: (h.object.userData.hitZone as HitZone) ?? 'torso',
@@ -543,7 +921,19 @@ export class ZombieSystem {
     e.hitReactDirX = dirX;
     e.hitReactDirZ = dirZ;
 
-    if (hitZone === 'limb' && e.type === 'shambler' && e.health > 0 && e.health < e.maxHealth * 0.32 && !e.isCrawler) {
+    // Show heavy chest wound when below 55% health
+    if (!e.woundedShown && e.health > 0 && e.health < e.maxHealth * 0.55 && e.type !== 'hound') {
+      e.woundedShown = true;
+      e.bloodWoundMesh.visible = true;
+    }
+
+    if (
+      hitZone === 'limb' &&
+      e.type === 'shambler' &&
+      e.health > 0 &&
+      e.health < e.maxHealth * 0.32 &&
+      !e.isCrawler
+    ) {
       e.isCrawler = true;
       e.moveSpeed = 1.05;
       e.leftLeg.visible = false;
@@ -655,35 +1045,48 @@ export class ZombieSystem {
     }
   }
 
+  private applyHoundMaterial(e: ZombieEntity, mat: THREE.MeshStandardMaterial): void {
+    for (const m of e.rigMeshes.houndMeshes) {
+      m.material = mat;
+    }
+  }
+
   private applyMaterialsToRig(
     e: ZombieEntity,
-    mats: [THREE.MeshStandardMaterial, THREE.MeshStandardMaterial, THREE.MeshStandardMaterial, THREE.MeshStandardMaterial],
+    mats: [
+      THREE.MeshStandardMaterial,
+      THREE.MeshStandardMaterial,
+      THREE.MeshStandardMaterial,
+      THREE.MeshStandardMaterial,
+    ],
   ): void {
-    e.torsoSubMeshes.head.material = mats[0];
-    e.torsoSubMeshes.la.material = mats[0];
-    e.torsoSubMeshes.ra.material = mats[0];
-    e.torsoSubMeshes.torso.material = mats[1];
-    e.torsoSubMeshes.ll.material = mats[2];
-    e.torsoSubMeshes.rl.material = mats[2];
-    e.torsoSubMeshes.blood.material = mats[3];
+    for (const m of e.rigMeshes.skinMeshes) m.material = mats[0];
+    for (const m of e.rigMeshes.clothMeshes) m.material = mats[1];
+    for (const m of e.rigMeshes.pantsMeshes) m.material = mats[2];
+    for (const m of e.rigMeshes.bloodMeshes) m.material = mats[3];
   }
 
   private killEntity(e: ZombieEntity): void {
     e.state = 'dying';
     e.stateTimer = 0;
     e.corpseTimer = 0;
-    if (!e.dissolveMaterials) {
-      e.dissolveMaterials = [
-        this.createDissolveMaterial(e.baseMaterials[0].color.getHex(), 0.72, e.dissolveUniform),
-        this.createDissolveMaterial(e.baseMaterials[1].color.getHex(), 0.85, e.dissolveUniform),
-        this.createDissolveMaterial(0x282b2e, 0.88, e.dissolveUniform),
-        this.createDissolveMaterial(0x521010, 0.35, e.dissolveUniform),
-      ];
-    } else {
-      e.dissolveMaterials[0].color.copy(e.baseMaterials[0].color);
-      e.dissolveMaterials[1].color.copy(e.baseMaterials[1].color);
+
+    // Dispose old dissolve materials if re-used across types so textures stay accurate
+    if (e.dissolveMaterials) {
+      for (const dm of e.dissolveMaterials) dm.dispose();
     }
-    this.applyMaterialsToRig(e, e.dissolveMaterials);
+    e.dissolveMaterials = [
+      this.createDissolveMaterial(e.baseMaterials[0], e.dissolveUniform),
+      this.createDissolveMaterial(e.baseMaterials[1], e.dissolveUniform),
+      this.createDissolveMaterial(e.baseMaterials[2], e.dissolveUniform),
+      this.createDissolveMaterial(e.baseMaterials[3], e.dissolveUniform),
+    ];
+
+    if (e.type === 'hound') {
+      this.applyHoundMaterial(e, e.dissolveMaterials[0]);
+    } else {
+      this.applyMaterialsToRig(e, e.dissolveMaterials);
+    }
   }
 
   public update(
@@ -697,7 +1100,6 @@ export class ZombieSystem {
   ): void {
     this.aiFrameCounter++;
 
-    // Populate spatial hash inputs
     for (let i = 0; i < MAX_ZOMBIES; i++) {
       const e = this.entities[i]!;
       const alive = e.active && e.state !== 'dying' && e.state !== 'dead';
@@ -711,11 +1113,23 @@ export class ZombieSystem {
       const e = this.entities[i]!;
       if (!e.active) continue;
 
+      if (e.spawnFogTimer > 0) {
+        e.spawnFogTimer -= dt;
+        const p = 1 - Math.max(0, e.spawnFogTimer / 0.75);
+        const ringMat = e.spawnFogRing.material as THREE.MeshBasicMaterial;
+        ringMat.opacity = (1 - p) * 0.55;
+        const s = 0.7 + p * 2.1;
+        e.spawnFogRing.scale.set(s, s, 1);
+        if (e.spawnFogTimer <= 0) {
+          e.spawnFogRing.visible = false;
+        }
+      }
+
       if (e.state === 'dying') {
         e.stateTimer += dt;
         const fallT = Math.min(1, e.stateTimer / 0.42);
         e.bodyGroup.rotation.x = THREE.MathUtils.lerp(0, -Math.PI * 0.48, fallT);
-        e.bodyGroup.position.y = THREE.MathUtils.lerp(0, 0.25, fallT);
+        e.bodyGroup.position.y = THREE.MathUtils.lerp(0, e.type === 'hound' ? 0.14 : 0.25, fallT);
         e.corpseTimer += dt;
         if (e.corpseTimer > BALANCE.enemies.shambler.corpseFadeDelay) {
           const fadeT =
@@ -753,7 +1167,6 @@ export class ZombieSystem {
       const dzToP = playerPos.z - e.z;
       const distToP = Math.hypot(dxToP, dzToP);
 
-      // Barricade Window traversal state machine
       if (e.state === 'approach_window' && e.windowId) {
         const win = windows.get(e.windowId);
         if (!win) {
@@ -811,8 +1224,8 @@ export class ZombieSystem {
         }
       } else if (e.state === 'bloater_fuse') {
         e.stateTimer += dt;
-        const pulse = 1 + Math.sin(e.stateTimer * 22) * 0.14;
-        e.root.scale.set(1.42 * pulse, 1.06 * pulse, 1.48 * pulse);
+        const pulse = 1 + Math.sin(e.stateTimer * 24) * 0.14;
+        e.root.scale.set(1.36 * pulse, 1.04 * pulse, 1.38 * pulse);
         if (e.stateTimer >= BALANCE.enemies.bloater.fuseTime) {
           this.killEntity(e);
           onBloaterExplode(e.x, e.y + 1.0, e.z);
@@ -876,7 +1289,6 @@ export class ZombieSystem {
               : BALANCE.enemies.shambler.attackCooldown;
         }
       } else if (e.state === 'chase') {
-        // Trigger Bloater fuse or Brute charge or Melee attack
         if (e.type === 'bloater' && distToP <= BALANCE.enemies.bloater.meleeRange) {
           e.state = 'bloater_fuse';
           e.stateTimer = 0;
@@ -903,7 +1315,6 @@ export class ZombieSystem {
             e.attackDealt = false;
             this.audio.playZombieSound(e.type === 'hound' ? 'hound' : 'attack', e.x, 1.4, e.z);
           } else if (e.staggerTimer <= 0) {
-            // Flow-field steering + spatial-hash separation (anti-conga-line)
             if (distToP < 2.6 && this.nav.isWalkableWorld(e.x, e.z)) {
               const inv = 1 / Math.max(0.01, distToP);
               this.flowSample.x = dxToP * inv;
@@ -937,7 +1348,6 @@ export class ZombieSystem {
               e.x = nx;
               e.z = nz;
             } else {
-              // Slide along walkable axis
               if (this.nav.isWalkableWorld(nx, e.z)) e.x = nx;
               else if (this.nav.isWalkableWorld(e.x, nz)) e.z = nz;
             }
@@ -952,7 +1362,6 @@ export class ZombieSystem {
           }
         }
 
-        // Stuck detection (5s without making >0.4m progress)
         const progDist = Math.hypot(e.x - e.lastProgressX, e.z - e.lastProgressZ);
         if (progDist > 0.45) {
           e.lastProgressX = e.x;
@@ -967,7 +1376,6 @@ export class ZombieSystem {
         }
       }
 
-      // Apply world transform & LOD animation
       e.root.position.set(e.x, e.y, e.z);
       e.root.rotation.y = e.yaw;
 
@@ -987,7 +1395,6 @@ export class ZombieSystem {
   ): void {
     const valid = spawnPoints.filter((s) => unlockedZones.has(s.zone));
     if (valid.length === 0) return;
-    // Choose farthest spawn point (out of sight)
     let best = valid[0]!;
     let bestDist = -1;
     for (const sp of valid) {
@@ -1014,6 +1421,19 @@ export class ZombieSystem {
   }
 
   private animateZombieRig(e: ZombieEntity, dt: number): void {
+    if (e.type === 'hound') {
+      e.animPhase += dt * 13.5;
+      const g = Math.sin(e.animPhase);
+      const c = Math.cos(e.animPhase);
+      e.houndLegs[0].rotation.x = g * 0.72;
+      e.houndLegs[1].rotation.x = g * 0.72 + 0.15;
+      e.houndLegs[2].rotation.x = -g * 0.72;
+      e.houndLegs[3].rotation.x = -g * 0.72 + 0.15;
+      e.bodyGroup.position.y = Math.abs(c) * 0.08;
+      e.houndHead.rotation.x = e.state === 'attack' ? -0.35 + g * 0.35 : c * 0.12;
+      return;
+    }
+
     const strideFreq = e.speedClass === 'sprint' ? 11.5 : e.speedClass === 'run' ? 8.2 : 4.8;
     e.animPhase += dt * strideFreq;
     const s = Math.sin(e.animPhase);
@@ -1027,11 +1447,15 @@ export class ZombieSystem {
       return;
     }
 
-    // Hit reaction lean
     if (e.hitReactTimer > 0) {
-      e.bodyGroup.rotation.x = -0.25 * (e.hitReactTimer / 0.22);
-    } else if (e.type !== 'hound') {
-      e.bodyGroup.rotation.x = e.speedClass === 'sprint' ? 0.16 : 0.06;
+      e.bodyGroup.rotation.x = -0.28 * (e.hitReactTimer / 0.22);
+    } else if (e.state === 'brute_telegraph') {
+      e.bodyGroup.rotation.x = 0.28;
+      e.leftArm.rotation.x = -2.4;
+      e.rightArm.rotation.x = -2.4;
+      return;
+    } else {
+      e.bodyGroup.rotation.x = e.speedClass === 'sprint' ? 0.18 : 0.06;
     }
 
     if (e.state === 'attack' || e.state === 'tear_board') {
@@ -1046,7 +1470,8 @@ export class ZombieSystem {
       e.leftArm.rotation.x = -1.25 + c * 0.22;
       e.rightArm.rotation.x = -1.25 - c * 0.22;
       e.bodyGroup.position.y = Math.abs(s) * 0.045;
-      e.headMesh.rotation.z = c * 0.12;
+      e.headMesh.rotation.z = c * 0.14;
+      e.headMesh.rotation.x = 0.1 + s * 0.06;
     }
     void this.tmpVec;
   }

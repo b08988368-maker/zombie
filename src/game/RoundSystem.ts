@@ -67,6 +67,7 @@ export class RoundSystem {
     playerPos: { x: number; z: number },
     onBannerClear: () => void,
     onRadioAnnounce: (msg: string) => void,
+    onBruteEntrance?: () => void,
   ): void {
     if (this.phase === 'intro' || this.phase === 'special_intro') {
       this.phaseTimer -= dt;
@@ -107,6 +108,8 @@ export class RoundSystem {
           if (this.zombies.spawnEnemy(enemyType, this.round, chosen, this.rng)) {
             this.remainingToSpawn--;
             if (enemyType === 'brute') {
+              this.audio.playRoundStinger('brute');
+              onBruteEntrance?.();
               onRadioAnnounce('Warning: Heavy Brute specimen breached containment.');
             }
           }

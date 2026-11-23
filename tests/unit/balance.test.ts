@@ -4,6 +4,7 @@ import {
   calculateRoundZombieCount,
   calculateSpawnDelay,
   calculateZombieHealth,
+  getSpeedClassWeights,
 } from '../../src/config/balance';
 
 describe('HOLLOWFIELD Balance & Round Formulas', () => {
@@ -31,10 +32,31 @@ describe('HOLLOWFIELD Balance & Round Formulas', () => {
     expect(calculateSpawnDelay(100)).toBe(0.1);
   });
 
-  it('enforces weapon and perk config invariants', () => {
+  it('enforces weapon, knife scaling, overclock, and perk config invariants', () => {
     expect(Object.keys(BALANCE.weapons)).toHaveLength(7);
     expect(Object.keys(BALANCE.perks.list)).toHaveLength(5);
     expect(BALANCE.rounds.maxAlive).toBe(24);
     expect(BALANCE.economy.barricade.maxPlanks).toBe(6);
+
+    // Knife kills Round 1 shambler (150 HP) in 1 hit, Round 2 (250 HP) requires 2 hits
+    const r1Knife = BALANCE.player.knifeDamageBase;
+    const r2Knife = BALANCE.player.knifeDamageBase + BALANCE.player.knifeDamagePerRoundStep;
+    expect(r1Knife).toBeGreaterThanOrEqual(calculateZombieHealth(1));
+    expect(r2Knife).toBeLessThan(calculateZombieHealth(2));
+
+    // Overclock multipliers match §4
+    expect(BALANCE.overclock.damageMult).toBe(2.5);
+    expect(BALANCE.overclock.magMult).toBe(1.5);
+
+    // Crate weights > 0 for all non-starting weapons
+    expect(BALANCE.weapons.service_pistol.crateWeight).toBe(0);
+    expect(BALANCE.weapons.phase_cannon.crateOnly).toBe(true);
+    expect(BALANCE.weapons.phase_cannon.crateWeight).toBeGreaterThan(0);
+
+    // Speed class weights sum to 1.0 across rounds
+    for (const r of [1, 5, 9, 14, 20]) {
+      const w = getSpeedClassWeights(r);
+      expect(w.walk + w.run + w.sprint).toBeCloseTo(1.0, 5);
+    }
   });
 });
