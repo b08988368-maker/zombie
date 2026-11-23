@@ -90,6 +90,9 @@ export class PlayerController {
     this.meleeCooldown = 0;
     this.knifeAnimTimer = 0;
     this.drinkAnimTimer = 0;
+    this.eyeOffset = BALANCE.player.eyeHeight;
+    this.bobTimer = 0;
+    this.stepAccum = 0;
     this.grenades = BALANCE.player.grenadesStart;
   }
 

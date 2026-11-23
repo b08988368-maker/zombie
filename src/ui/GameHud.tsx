@@ -32,25 +32,32 @@ export function GameHud({ snap, onResumePointer }: GameHudProps) {
 
   return (
     <div className="fixed inset-0 pointer-events-none z-10 select-none">
-      {/* Low-health blood vignette */}
-      {lowHealth && (
+      {/* Low-health & reactive damage blood vignette */}
+      {(lowHealth || snap.damageFlash > 0.02) && (
         <div
-          className="fixed inset-0 transition-opacity duration-200"
+          className="fixed inset-0 transition-opacity duration-100"
           style={{
-            opacity: Math.min(0.85, (0.42 - healthRatio) * 2.2),
+            opacity: Math.max(
+              lowHealth ? Math.min(0.85, (0.42 - healthRatio) * 2.2) : 0,
+              Math.min(0.9, snap.damageFlash * 0.85),
+            ),
             background:
-              'radial-gradient(circle at center, transparent 48%, rgba(125, 14, 14, 0.72) 100%)',
+              'radial-gradient(circle at center, transparent 42%, rgba(135, 14, 14, 0.78) 100%)',
           }}
         />
       )}
 
-      {/* Top-Left: Sector, Power, Easter Egg & Early Objective */}
-      <div className="fixed top-5 left-6 flex flex-col gap-1.5 max-w-[265px]">
-        <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs tracking-wider uppercase text-[#c4beaf]">
+      {/* Top-Left: Sector, Power, Hostiles, Easter Egg & Early Objective */}
+      <div className="fixed top-5 left-6 flex flex-col gap-1.5 max-w-[310px]">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs tracking-wider uppercase text-[#c4beaf] bg-[#0d100f]/78 px-2.5 py-1 border border-white/10">
           <span className="font-semibold text-[#ece9e2]">{snap.currentZoneLabel}</span>
           <span aria-hidden="true">·</span>
           <span className={snap.powerOn ? 'text-emerald-400' : 'text-amber-400'}>
             {snap.powerOn ? 'Power Online' : 'Power Offline'}
+          </span>
+          <span aria-hidden="true">·</span>
+          <span className="text-[#ece9e2] font-mono-tabular">
+            Hostiles {snap.zombiesRemaining}
           </span>
           {snap.easterEggStep >= 1 && snap.easterEggStep < 4 && (
             <>
@@ -132,33 +139,74 @@ export function GameHud({ snap, onResumePointer }: GameHudProps) {
         </div>
       )}
 
-      {/* Center Crosshair & Hit Markers */}
+      {/* Longbow Marksman Scope Vignette when ADS */}
+      {snap.isAds && snap.activeWeaponId === 'longbow' && !snap.isReviving && (
+        <div
+          className="fixed inset-0 pointer-events-none"
+          style={{
+            background:
+              'radial-gradient(circle at center, transparent 27%, rgba(5, 7, 6, 0.84) 44%, rgba(4, 5, 5, 0.96) 100%)',
+          }}
+        />
+      )}
+
+      {/* Center Tactical Crosshair ("Cross Aim") & Hit Markers */}
       <div className="fixed inset-0 flex items-center justify-center">
-        {!snap.isAds && !snap.isReviving && (
-          <div className="relative w-8 h-8">
-            <span
-              className="absolute left-1/2 -translate-x-1/2 w-[2px] h-2 bg-white/80"
-              style={{ top: snap.isSprinting ? -2 : 2 }}
-            />
-            <span
-              className="absolute left-1/2 -translate-x-1/2 w-[2px] h-2 bg-white/80"
-              style={{ bottom: snap.isSprinting ? -2 : 2 }}
-            />
-            <span
-              className="absolute top-1/2 -translate-y-1/2 h-[2px] w-2 bg-white/80"
-              style={{ left: snap.isSprinting ? -2 : 2 }}
-            />
-            <span
-              className="absolute top-1/2 -translate-y-1/2 h-[2px] w-2 bg-white/80"
-              style={{ right: snap.isSprinting ? -2 : 2 }}
-            />
-          </div>
-        )}
+        {!snap.isReviving && (() => {
+          const isScoped = snap.isAds && snap.activeWeaponId === 'longbow';
+          const gap = snap.isAds
+            ? 5
+            : Math.round(7 + (snap.crosshairSpread ?? 0.25) * 18);
+          const prongLen = snap.isAds ? 5 : 9;
+
+          if (isScoped) {
+            return (
+              <div data-testid="crosshair" className="relative w-64 h-64 flex items-center justify-center">
+                <span className="absolute left-0 right-0 top-1/2 -translate-y-1/2 h-[1px] bg-black/80" />
+                <span className="absolute top-0 bottom-0 left-1/2 -translate-x-1/2 w-[1px] bg-black/80" />
+                <span className="absolute left-12 right-12 top-1/2 -translate-y-1/2 h-[1px] bg-amber-300/70" />
+                <span className="absolute top-12 bottom-12 left-1/2 -translate-x-1/2 w-[1px] bg-amber-300/70" />
+                <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shadow-[0_0_6px_rgba(251,191,36,0.95)]" />
+              </div>
+            );
+          }
+
+          return (
+            <div data-testid="crosshair" className="relative w-20 h-20 flex items-center justify-center">
+              {/* High-contrast precision center dot */}
+              <span
+                className={`w-[3px] h-[3px] rounded-full shadow-[0_0_2px_rgba(0,0,0,0.95),0_0_4px_rgba(0,0,0,0.85)] ${
+                  snap.isAds ? 'bg-amber-300' : 'bg-white'
+                }`}
+              />
+              {/* Top prong */}
+              <span
+                className="absolute left-1/2 -translate-x-1/2 w-[2px] bg-white/95 shadow-[0_0_2px_rgba(0,0,0,0.95)] transition-[bottom] duration-75"
+                style={{ height: prongLen, bottom: `calc(50% + ${gap}px)` }}
+              />
+              {/* Bottom prong */}
+              <span
+                className="absolute left-1/2 -translate-x-1/2 w-[2px] bg-white/95 shadow-[0_0_2px_rgba(0,0,0,0.95)] transition-[top] duration-75"
+                style={{ height: prongLen, top: `calc(50% + ${gap}px)` }}
+              />
+              {/* Left prong */}
+              <span
+                className="absolute top-1/2 -translate-y-1/2 h-[2px] bg-white/95 shadow-[0_0_2px_rgba(0,0,0,0.95)] transition-[right] duration-75"
+                style={{ width: prongLen, right: `calc(50% + ${gap}px)` }}
+              />
+              {/* Right prong */}
+              <span
+                className="absolute top-1/2 -translate-y-1/2 h-[2px] bg-white/95 shadow-[0_0_2px_rgba(0,0,0,0.95)] transition-[left] duration-75"
+                style={{ width: prongLen, left: `calc(50% + ${gap}px)` }}
+              />
+            </div>
+          );
+        })()}
 
         {snap.hitMarkerAlpha > 0 && snap.hitMarkerType !== 'none' && (
           <svg
-            width="28"
-            height="28"
+            width={snap.hitMarkerType === 'headshot' ? 34 : 28}
+            height={snap.hitMarkerType === 'headshot' ? 34 : 28}
             viewBox="0 0 28 28"
             className="absolute"
             style={{ opacity: snap.hitMarkerAlpha }}
@@ -171,15 +219,24 @@ export function GameHud({ snap, onResumePointer }: GameHudProps) {
                     ? '#ef4444'
                     : '#ffffff'
               }
-              strokeWidth="2.2"
+              strokeWidth={snap.hitMarkerType === 'headshot' ? '2.6' : '2.2'}
               strokeLinecap="round"
             >
-              <line x1="5" y1="5" x2="10" y2="10" />
-              <line x1="23" y1="5" x2="18" y2="10" />
-              <line x1="5" y1="23" x2="10" y2="18" />
-              <line x1="23" y1="23" x2="18" y2="18" />
+              <line x1="4" y1="4" x2="10" y2="10" />
+              <line x1="24" y1="4" x2="18" y2="10" />
+              <line x1="4" y1="24" x2="10" y2="18" />
+              <line x1="24" y1="24" x2="18" y2="18" />
             </g>
           </svg>
+        )}
+
+        {snap.hitMarkerAlpha > 0 && snap.hitMarkerType === 'headshot' && (
+          <div
+            className="absolute top-[53.5%] text-[10px] font-bold tracking-[0.22em] uppercase text-amber-400 drop-shadow-[0_1px_2px_rgba(0,0,0,0.95)]"
+            style={{ opacity: snap.hitMarkerAlpha }}
+          >
+            HEADSHOT
+          </div>
         )}
 
         {/* Directional Damage Indicator */}
@@ -194,9 +251,32 @@ export function GameHud({ snap, onResumePointer }: GameHudProps) {
             <div className="mx-auto w-12 h-2 bg-red-600/85" />
           </div>
         )}
+
+        {/* Crisp center-offset kill & headshot score callouts */}
+        {snap.pointDeltas.some((d) => d.reason !== 'Hit') && (
+          <div className="absolute left-[54%] top-[47%] flex flex-col items-start gap-0.5">
+            {snap.pointDeltas
+              .filter((d) => d.reason !== 'Hit')
+              .slice(-3)
+              .map((d) => (
+                <div
+                  key={d.id}
+                  className={`font-mono-tabular text-[11px] font-bold tracking-wider uppercase drop-shadow-[0_1px_2px_rgba(0,0,0,0.95)] ${
+                    d.reason === 'Headshot'
+                      ? 'text-amber-300'
+                      : d.reason === 'Melee Kill'
+                        ? 'text-emerald-300'
+                        : 'text-[#f3efe6]'
+                  }`}
+                >
+                  +{d.amount} {d.reason}
+                </div>
+              ))}
+          </div>
+        )}
       </div>
 
-      {/* Reload / Revive Center Bars */}
+      {/* Reload / Low-Ammo / Revive Center Bars */}
       {snap.isReloading && (
         <div className="fixed top-[57%] left-1/2 -translate-x-1/2 w-36">
           <div className="text-[10px] uppercase tracking-widest text-center text-[#d6d3cb] mb-1">
@@ -208,6 +288,12 @@ export function GameHud({ snap, onResumePointer }: GameHudProps) {
               style={{ width: `${Math.round(snap.reloadProgress * 100)}%` }}
             />
           </div>
+        </div>
+      )}
+
+      {!snap.isReloading && activeWeapon && activeWeapon.mag === 0 && activeWeapon.reserve > 0 && (
+        <div className="fixed top-[57%] left-1/2 -translate-x-1/2 text-[11px] font-semibold uppercase tracking-[0.16em] text-red-400 bg-[#0a0c0b]/80 border border-red-500/40 px-2.5 py-0.5">
+          [R] Reload
         </div>
       )}
 
@@ -265,16 +351,26 @@ export function GameHud({ snap, onResumePointer }: GameHudProps) {
         </div>
       )}
 
-      {/* Click-to-capture hint when pointer isn't locked */}
+      {/* Click-to-capture or fallback aim hint when pointer isn't locked */}
       {!snap.pointerLocked && snap.screen === 'playing' && (
-        <div className="fixed bottom-44 left-1/2 -translate-x-1/2 pointer-events-auto">
-          <button
-            type="button"
-            onClick={onResumePointer}
-            className="px-4 py-2 text-xs font-medium bg-[#151917]/95 border border-amber-500/40 text-amber-200 hover:bg-[#1e2421]"
-          >
-            Click Viewport to Lock Mouse Aim · Esc to Pause
-          </button>
+        <div
+          className={`fixed ${snap.interactPrompt ? 'bottom-52' : 'bottom-6'} left-1/2 -translate-x-1/2 ${
+            snap.pointerLockBlocked ? 'pointer-events-none' : 'pointer-events-auto'
+          }`}
+        >
+          {snap.pointerLockBlocked ? (
+            <div className="px-3 py-1 text-[11px] font-medium bg-[#0e1110]/85 border border-amber-500/25 text-amber-200/90 whitespace-nowrap">
+              Mouse / RMB / Arrows to Aim · Esc Pause
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={onResumePointer}
+              className="px-4 py-1.5 text-xs font-medium bg-[#151917]/95 border border-amber-500/40 text-amber-200 hover:bg-[#1e2421]"
+            >
+              Click Viewport to Lock Mouse Aim · Esc to Pause
+            </button>
+          )}
         </div>
       )}
 
@@ -351,10 +447,18 @@ export function GameHud({ snap, onResumePointer }: GameHudProps) {
                 </div>
                 <span className="text-[11px] text-[#8d877a]">
                   Slot {snap.activeSlot + 1}/{snap.weapons.length} · Frag {snap.grenades}/
-                  {snap.maxGrenades}
+                  {snap.maxGrenades} · [T] Torch {snap.flashlightOn ? 'ON' : 'OFF'} · [X] Inspect
                 </span>
               </div>
-              <div className="font-mono-tabular text-2xl font-bold text-[#ece9e2]">
+              <div
+                className={`font-mono-tabular text-2xl font-bold ${
+                  activeWeapon.mag === 0
+                    ? 'text-red-400'
+                    : activeWeapon.mag <= Math.max(1, Math.ceil(activeWeapon.magSize * 0.25))
+                      ? 'text-amber-400'
+                      : 'text-[#ece9e2]'
+                }`}
+              >
                 {activeWeapon.mag}
                 <span className="text-sm text-[#8d877a] font-normal">
                   /{activeWeapon.reserve}

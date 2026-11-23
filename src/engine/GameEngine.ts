@@ -30,6 +30,7 @@ import { ZombieSystem } from '../game/ZombieSystem';
 
 export interface DebugApi {
   getState: () => HudSnapshot;
+  getPlayerPose: () => { x: number; y: number; z: number; yaw: number; pitch: number };
   getZombies: () => { id: number; type: EnemyType; x: number; z: number; state: string; health: number }[];
   getStuckTeleports: () => number;
   startRun: () => void;
@@ -37,7 +38,7 @@ export interface DebugApi {
   addPoints: (amt: number) => void;
   jumpToRound: (r: number) => void;
   spawnAllZombiesTest: (count: number) => void;
-  triggerAction: (action: 'shoot' | 'reload' | 'melee' | 'interact' | 'swap' | 'grenade') => void;
+  triggerAction: (action: 'shoot' | 'reload' | 'melee' | 'interact' | 'swap' | 'grenade' | 'inspect') => void;
 }
 
 export class GameEngine {
@@ -47,6 +48,10 @@ export class GameEngine {
   private renderer!: THREE.WebGLRenderer;
   private scene!: THREE.Scene;
   private camera!: THREE.PerspectiveCamera;
+  private flashlight!: THREE.SpotLight;
+  private flashlightTarget!: THREE.Object3D;
+  private sporePoints: THREE.Points | null = null;
+  private flashlightOn = true;
   private postProcess!: PostProcessPipeline;
   private mats!: PbrMaterialSet;
 
@@ -68,7 +73,12 @@ export class GameEngine {
   private showDebug = false;
   private isSoftwareGl = false;
   private pointerLocked = false;
+  private pointerLockBlocked = false;
+  private ignoreUnlockPause = false;
   private ignoreNextMouseMove = false;
+  private lastMouseX: number | null = null;
+  private lastMouseY: number | null = null;
+  private edgeTurnDir = 0;
   private disposed = false;
 
   private points: number = BALANCE.player.startingPoints;
@@ -174,6 +184,18 @@ export class GameEngine {
     );
     this.scene.add(this.camera);
 
+    // Camera-mounted tactical flashlight (toggleable via T)
+    this.flashlight = new THREE.SpotLight(0xfff1d6, 2.8, 28, Math.PI / 4.2, 0.95, 1.35);
+    this.flashlight.position.set(0.06, -0.04, -0.45);
+    this.flashlightTarget = new THREE.Object3D();
+    this.flashlightTarget.position.set(0, -0.04, -12);
+    this.camera.add(this.flashlight);
+    this.camera.add(this.flashlightTarget);
+    this.flashlight.target = this.flashlightTarget;
+
+    // Atmospheric drifting fungal spore motes across the station (1 draw call)
+    this.createSporeAtmosphere();
+
     // Mandatory studio environment reflection for PBR metals
     const pmrem = new THREE.PMREMGenerator(this.renderer);
     this.scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
@@ -198,7 +220,7 @@ export class GameEngine {
     this.scene.add(moon);
 
     this.emitLoad(0.55, 'Synthesizing PBR Materials...');
-    this.mats = createPbrMaterialSet(this.renderer);
+    this.mats = createPbrMaterialSet(this.renderer, this.isSoftwareGl);
 
     this.emitLoad(0.75, 'Constructing Hollowfield Station...');
     this.physics.initWorld(-7, 0.9, 22);
@@ -265,6 +287,7 @@ export class GameEngine {
       loadProgress: progress,
       loadLabel: label,
       pointerLocked: false,
+      pointerLockBlocked: this.pointerLockBlocked,
       health: 100,
       maxHealth: 100,
       isReviving: false,
@@ -279,10 +302,14 @@ export class GameEngine {
       currentZoneLabel: ZONE_LABELS.farmhouse,
       weapons: [],
       activeSlot: 0,
+      activeWeaponId: 'service_pistol',
       isReloading: false,
       reloadProgress: 0,
       isAds: false,
       isSprinting: false,
+      crosshairSpread: 0.25,
+      flashlightOn: this.flashlightOn,
+      zombiesRemaining: 6,
       grenades: 2,
       maxGrenades: 4,
       perks: [],
@@ -291,6 +318,7 @@ export class GameEngine {
       pointDeltas: [],
       hitMarkerType: 'none',
       hitMarkerAlpha: 0,
+      damageFlash: 0,
       damageIndicatorAngle: null,
       damageIndicatorAlpha: 0,
       radioMessage: null,
@@ -313,9 +341,40 @@ export class GameEngine {
     window.addEventListener('mousemove', this.onMouseMove);
     window.addEventListener('mousedown', this.onMouseDown);
     window.addEventListener('mouseup', this.onMouseUp);
+    window.addEventListener('blur', this.onWindowBlur);
     window.addEventListener('contextmenu', this.onContextMenu);
     document.addEventListener('pointerlockchange', this.onPointerLockChange);
+    document.addEventListener('pointerlockerror', this.onPointerLockError);
   }
+
+  private clearInputs(): void {
+    this.keysDown.clear();
+    this.mouseLeftDown = false;
+    this.mouseRightDown = false;
+    this.pendingFirePress = false;
+    this.pendingReloadPress = false;
+    this.pendingMeleePress = false;
+    this.pendingGrenadePress = false;
+    this.pendingSwapPress = false;
+    this.lastMouseX = null;
+    this.lastMouseY = null;
+    this.edgeTurnDir = 0;
+  }
+
+  private exitPointerLockSafely(): void {
+    if (document.pointerLockElement) {
+      this.ignoreUnlockPause = true;
+      try {
+        document.exitPointerLock?.();
+      } catch {
+        this.ignoreUnlockPause = false;
+      }
+    }
+  }
+
+  private onWindowBlur = (): void => {
+    this.clearInputs();
+  };
 
   private onResize = (): void => {
     this.postProcess.resize(window.innerWidth, window.innerHeight);
@@ -325,12 +384,24 @@ export class GameEngine {
     if (this.screen === 'playing') e.preventDefault();
   };
 
+  private onPointerLockError = (): void => {
+    this.pointerLockBlocked = true;
+    this.emitHud();
+  };
+
   private onPointerLockChange = (): void => {
     const nextLocked = document.pointerLockElement === this.renderer.domElement;
-    if (nextLocked && !this.pointerLocked) {
+    const wasLocked = this.pointerLocked;
+    if (nextLocked) {
       this.ignoreNextMouseMove = true;
+      this.pointerLockBlocked = false;
     }
     this.pointerLocked = nextLocked;
+    if (wasLocked && !nextLocked && this.screen === 'playing' && !this.ignoreUnlockPause) {
+      this.pauseGame();
+      return;
+    }
+    this.ignoreUnlockPause = false;
     this.emitHud();
   };
 
@@ -354,7 +425,25 @@ export class GameEngine {
 
     if (this.screen !== 'playing') return;
 
+    if (
+      e.code === 'ArrowUp' ||
+      e.code === 'ArrowDown' ||
+      e.code === 'ArrowLeft' ||
+      e.code === 'ArrowRight' ||
+      e.code === 'Space'
+    ) {
+      e.preventDefault();
+    }
+
     this.keysDown.add(e.code);
+    if (e.code === 'KeyT') {
+      this.flashlightOn = !this.flashlightOn;
+      this.flashlight.intensity = this.flashlightOn ? 2.8 : 0;
+      this.emitHud();
+    }
+    if (e.code === 'KeyX') {
+      this.weapons.triggerInspect();
+    }
     const kb = this.settings.keyBindings;
     if (e.code === kb.reload) this.pendingReloadPress = true;
     if (e.code === kb.melee) this.pendingMeleePress = true;
@@ -368,27 +457,68 @@ export class GameEngine {
 
   private onMouseMove = (e: MouseEvent): void => {
     if (this.screen !== 'playing') return;
-    if (!this.pointerLocked) return;
-    if (this.ignoreNextMouseMove) {
-      this.ignoreNextMouseMove = false;
+    const allowUnlocked = this.pointerLockBlocked || this.mouseRightDown;
+    if (!this.pointerLocked && !allowUnlocked) {
+      this.lastMouseX = e.clientX;
+      this.lastMouseY = e.clientY;
       return;
     }
-    if (Math.abs(e.movementX) > 160 || Math.abs(e.movementY) > 160) return;
+    if (this.ignoreNextMouseMove) {
+      this.ignoreNextMouseMove = false;
+      this.lastMouseX = e.clientX;
+      this.lastMouseY = e.clientY;
+      return;
+    }
+
+    let dx = e.movementX;
+    let dy = e.movementY;
+    if (dx === 0 && dy === 0 && this.lastMouseX !== null && this.lastMouseY !== null) {
+      dx = e.clientX - this.lastMouseX;
+      dy = e.clientY - this.lastMouseY;
+    }
+    this.lastMouseX = e.clientX;
+    this.lastMouseY = e.clientY;
+
+    if (this.pointerLockBlocked && !this.pointerLocked) {
+      const w = Math.max(1, window.innerWidth);
+      const edge = w * 0.14;
+      if (e.clientX <= edge) {
+        this.edgeTurnDir = -Math.pow((edge - e.clientX) / edge, 1.35);
+      } else if (e.clientX >= w - edge) {
+        this.edgeTurnDir = Math.pow((e.clientX - (w - edge)) / edge, 1.35);
+      } else {
+        this.edgeTurnDir = 0;
+      }
+    } else {
+      this.edgeTurnDir = 0;
+    }
+
+    if (Math.abs(dx) > 450 || Math.abs(dy) > 450) return;
     const cfg = this.weapons.getActiveConfig();
-    this.player.applyLookDelta(e.movementX, e.movementY, this.settings, cfg.adsSensScale);
+    const friction = !this.pointerLocked && this.isReticleNearZombie() ? 0.6 : 1.0;
+    this.player.applyLookDelta(dx * friction, dy * friction, this.settings, cfg.adsSensScale);
+    this.weapons.addLookSway(dx * friction, dy * friction);
   };
 
   private onMouseDown = (e: MouseEvent): void => {
     if (this.screen !== 'playing') return;
     this.audio.init();
     this.audio.resume();
-    if (!this.pointerLocked && e.target === this.renderer.domElement) {
+    if (
+      e.button === 0 &&
+      !this.pointerLocked &&
+      !this.pointerLockBlocked &&
+      e.target === this.renderer.domElement
+    ) {
       this.requestPointerLock();
     }
     if (e.button === 0) {
       this.mouseLeftDown = true;
       this.pendingFirePress = true;
     } else if (e.button === 2) {
+      if (!this.mouseRightDown && !this.pointerLocked) {
+        this.snapAimTowardNearestTarget();
+      }
       this.mouseRightDown = true;
     }
   };
@@ -400,16 +530,39 @@ export class GameEngine {
 
   public requestPointerLock(): void {
     try {
-      this.renderer.domElement.requestPointerLock?.();
+      const maybePromise = this.renderer.domElement.requestPointerLock?.() as unknown as
+        | Promise<void>
+        | undefined;
+      if (maybePromise && typeof maybePromise.catch === 'function') {
+        maybePromise.catch(() => {
+          this.pointerLockBlocked = true;
+          this.emitHud();
+        });
+      }
     } catch {
-      // Ignore pointer lock rejection in automated headless browsers
+      this.pointerLockBlocked = true;
+      this.emitHud();
     }
+    const tid = window.setTimeout(() => {
+      this.timerIds.delete(tid);
+      if (
+        !this.disposed &&
+        this.screen === 'playing' &&
+        !this.pointerLocked &&
+        document.pointerLockElement !== this.renderer.domElement
+      ) {
+        this.pointerLockBlocked = true;
+        this.emitHud();
+      }
+    }, 150);
+    this.timerIds.add(tid);
   }
 
   public startNewGame(): void {
     this.audio.init();
     this.audio.resume();
     this.audio.updateSettings(this.settings);
+    this.clearInputs();
 
     this.physics.playerBody.setNextKinematicTranslation({ x: -7, y: 0.9, z: 22 });
     this.physics.world.step();
@@ -424,13 +577,18 @@ export class GameEngine {
     this.points = BALANCE.player.startingPoints;
     this.stats = this.createEmptyStats();
     this.pointDeltas = [];
+    this.hitStopTimer = 0;
+    this.simAccum = 0;
+    this.hitMarkerType = 'none';
+    this.hitMarkerTimer = 0;
+    this.lastPrompt = null;
+    this.lastTimeMs = performance.now();
     this.roundBannerVisible = true;
     this.radioMessage = 'Station Radio: "Bloom containment failed. Hold the farmhouse until dawn."';
     this.radioTimer = 6.0;
     this.nav.updateFlowField(-7, 22, 1, true);
 
     this.screen = 'playing';
-    this.ignoreNextMouseMove = true;
     this.requestPointerLock();
     this.emitHud();
   }
@@ -438,6 +596,7 @@ export class GameEngine {
   public restartGame(): void {
     this.audio.init();
     this.audio.resume();
+    this.clearInputs();
     this.physics.playerBody.setNextKinematicTranslation({ x: -7, y: 0.9, z: 22 });
     this.physics.world.step();
     this.player.reset(-7, 0.9, 22);
@@ -451,35 +610,44 @@ export class GameEngine {
     this.points = BALANCE.player.startingPoints;
     this.stats = this.createEmptyStats();
     this.pointDeltas = [];
+    this.hitStopTimer = 0;
+    this.simAccum = 0;
+    this.hitMarkerType = 'none';
+    this.hitMarkerTimer = 0;
+    this.lastPrompt = null;
+    this.lastTimeMs = performance.now();
     this.roundBannerVisible = true;
     this.radioMessage = 'Station Radio: "Stay sharp. Tear-in from the west windows."';
     this.radioTimer = 5.5;
     this.nav.updateFlowField(-7, 22, 1, true);
 
     this.screen = 'playing';
-    this.ignoreNextMouseMove = true;
     this.requestPointerLock();
     this.emitHud();
   }
 
   public pauseGame(): void {
     if (this.screen !== 'playing') return;
+    this.clearInputs();
     this.screen = 'paused';
-    document.exitPointerLock?.();
+    this.exitPointerLockSafely();
     this.emitHud();
   }
 
   public resumeGame(): void {
     if (this.screen !== 'paused') return;
+    this.clearInputs();
+    this.simAccum = 0;
+    this.lastTimeMs = performance.now();
     this.screen = 'playing';
-    this.ignoreNextMouseMove = true;
     this.requestPointerLock();
     this.emitHud();
   }
 
   public returnToMenu(): void {
+    this.clearInputs();
     this.screen = 'menu';
-    document.exitPointerLock?.();
+    this.exitPointerLockSafely();
     this.emitHud();
   }
 
@@ -501,13 +669,18 @@ export class GameEngine {
     if (this.disposed) return;
 
     const nowMs = performance.now();
-    const rawDt = Math.min(BALANCE.sim.maxFrameDt, Math.max(0.001, (nowMs - this.lastTimeMs) / 1000));
+    const instantMs = Math.max(1, nowMs - this.lastTimeMs);
+    const rawDt = Math.min(BALANCE.sim.maxFrameDt, instantMs / 1000);
     this.lastTimeMs = nowMs;
 
-    // Frame timing metrics
-    const instantMs = rawDt * 1000;
+    // Frame timing metrics (unclamped so stalls are never hidden)
     this.frameTimeMs = this.frameTimeMs * 0.9 + instantMs * 0.1;
     this.fps = Math.round(1000 / Math.max(1, this.frameTimeMs));
+
+    if (this.sporePoints) {
+      this.sporePoints.rotation.y += rawDt * 0.012;
+      this.sporePoints.position.y = Math.sin(nowMs * 0.00055) * 0.16;
+    }
 
     if (this.screen === 'menu') {
       // Atmospheric 3D backdrop camera orbit across the foggy Silo Yard
@@ -519,9 +692,11 @@ export class GameEngine {
       );
       this.camera.lookAt(-3.5, 2.2, -1.5);
       this.weapons.viewmodelRoot.visible = false;
+      this.flashlight.intensity = 0.8;
       this.animateLights(nowMs * 0.001);
     } else if (this.screen === 'playing') {
       this.weapons.viewmodelRoot.visible = true;
+      this.flashlight.intensity = this.flashlightOn ? 2.8 : 0;
       this.stepSimulation(rawDt, nowMs * 0.001);
     } else {
       this.weapons.viewmodelRoot.visible = this.screen === 'paused';
@@ -609,6 +784,24 @@ export class GameEngine {
     this.pendingSwapPress = false;
 
     const activeCfg = this.weapons.getActiveConfig();
+    const yawTurn =
+      (this.keysDown.has('ArrowLeft') ? -1 : 0) +
+      (this.keysDown.has('ArrowRight') ? 1 : 0) +
+      (!this.pointerLocked && this.pointerLockBlocked ? this.edgeTurnDir : 0);
+    const pitchTurn =
+      (this.keysDown.has('ArrowUp') ? -1 : 0) +
+      (this.keysDown.has('ArrowDown') ? 1 : 0);
+    if (yawTurn !== 0 || pitchTurn !== 0) {
+      const turnRate = 720 * dt;
+      this.player.applyLookDelta(
+        yawTurn * turnRate,
+        pitchTurn * turnRate * 0.7,
+        this.settings,
+        activeCfg.adsSensScale,
+      );
+      this.weapons.addLookSway(yawTurn * turnRate * 0.6, pitchTurn * turnRate * 0.4);
+    }
+
     this.player.update(
       dt,
       input,
@@ -617,6 +810,7 @@ export class GameEngine {
       this.camera,
       activeCfg.adsFov,
     );
+    this.camera.updateMatrixWorld(true);
 
     const zone = getZoneAtPosition(this.player.position.x, this.player.position.z);
     this.audio.setRoundIntensity(this.rounds.round, zone);
@@ -865,10 +1059,90 @@ export class GameEngine {
   }
 
   private triggerGameOver(): void {
+    this.clearInputs();
     this.screen = 'gameover';
-    document.exitPointerLock?.();
+    this.exitPointerLockSafely();
     saveBestRun(this.rounds.round, this.stats.kills, this.stats.pointsEarned);
     this.emitHud();
+  }
+
+  private createSporeAtmosphere(): void {
+    const count = 180;
+    const positions = new Float32Array(count * 3);
+    for (let i = 0; i < count; i++) {
+      positions[i * 3] = (this.rng.next() - 0.5) * 68;
+      positions[i * 3 + 1] = 0.35 + this.rng.next() * 4.4;
+      positions[i * 3 + 2] = -42 + this.rng.next() * 68;
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    const mat = new THREE.PointsMaterial({
+      color: 0xd9f99d,
+      size: 0.11,
+      transparent: true,
+      opacity: 0.36,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+    this.sporePoints = new THREE.Points(geo, mat);
+    this.scene.add(this.sporePoints);
+  }
+
+  private isReticleNearZombie(): boolean {
+    this.camera.getWorldPosition(this.tmpEye);
+    this.camera.getWorldDirection(this.tmpForward);
+    for (const e of this.zombies.entities) {
+      if (!e.active || e.state === 'dying' || e.state === 'dead') continue;
+      const headY = e.y + (e.type === 'hound' ? 0.58 : e.isCrawler ? 0.42 : 1.46);
+      const dx = e.x - this.tmpEye.x;
+      const dy = headY - this.tmpEye.y;
+      const dz = e.z - this.tmpEye.z;
+      const dist = Math.hypot(dx, dy, dz);
+      if (dist < 0.4 || dist > 26) continue;
+      const dot = (dx * this.tmpForward.x + dy * this.tmpForward.y + dz * this.tmpForward.z) / dist;
+      if (dot > 0.992) return true;
+    }
+    return false;
+  }
+
+  private snapAimTowardNearestTarget(): void {
+    this.camera.getWorldPosition(this.tmpEye);
+    this.camera.getWorldDirection(this.tmpForward);
+    let bestDot = 0.97;
+    let bestDx = 0;
+    let bestDy = 0;
+    let bestDz = 0;
+    let found = false;
+    for (const e of this.zombies.entities) {
+      if (!e.active || e.state === 'dying' || e.state === 'dead') continue;
+      const headY = e.y + (e.type === 'hound' ? 0.58 : e.isCrawler ? 0.42 : 1.46);
+      const dx = e.x - this.tmpEye.x;
+      const dy = headY - this.tmpEye.y;
+      const dz = e.z - this.tmpEye.z;
+      const dist = Math.hypot(dx, dy, dz);
+      if (dist < 0.6 || dist > 26) continue;
+      const dot = (dx * this.tmpForward.x + dy * this.tmpForward.y + dz * this.tmpForward.z) / dist;
+      if (dot > bestDot) {
+        bestDot = dot;
+        bestDx = dx;
+        bestDy = dy;
+        bestDz = dz;
+        found = true;
+      }
+    }
+    if (!found) return;
+    const targetYaw = Math.atan2(-bestDx, -bestDz);
+    const horiz = Math.hypot(bestDx, bestDz);
+    const targetPitch = Math.atan2(bestDy, Math.max(0.01, horiz));
+    let dyaw = targetYaw - this.player.yaw;
+    while (dyaw > Math.PI) dyaw -= Math.PI * 2;
+    while (dyaw < -Math.PI) dyaw += Math.PI * 2;
+    this.player.yaw += dyaw * 0.65;
+    this.player.pitch = THREE.MathUtils.clamp(
+      this.player.pitch + (targetPitch - this.player.pitch) * 0.65,
+      -1.45,
+      1.45,
+    );
   }
 
   private animateLights(t: number): void {
@@ -900,6 +1174,7 @@ export class GameEngine {
       loadProgress: 1,
       loadLabel: 'Ready',
       pointerLocked: this.pointerLocked,
+      pointerLockBlocked: this.pointerLockBlocked,
       health: Math.ceil(this.player.health),
       maxHealth: this.player.maxHealth,
       isReviving: this.player.isReviving,
@@ -921,12 +1196,16 @@ export class GameEngine {
       currentZoneLabel: ZONE_LABELS[zone],
       weapons: this.weapons.slots.map((s) => ({ ...s })),
       activeSlot: this.weapons.activeSlot,
+      activeWeaponId: this.weapons.getActiveWeapon().id,
       isReloading: this.weapons.isReloading,
       reloadProgress: this.weapons.isReloading
         ? Math.min(1, this.weapons.reloadTimer / Math.max(0.1, this.weapons.reloadDuration))
         : 0,
       isAds: this.player.isAds,
       isSprinting: this.player.isSprinting,
+      crosshairSpread: this.weapons.getCrosshairSpread(this.player),
+      flashlightOn: this.flashlightOn,
+      zombiesRemaining: this.rounds.remainingToSpawn + this.zombies.getAliveCount(),
       grenades: this.player.grenades,
       maxGrenades: BALANCE.player.grenadesMax,
       perks: Array.from(this.interactables.perks),
@@ -935,6 +1214,7 @@ export class GameEngine {
       pointDeltas: [...this.pointDeltas],
       hitMarkerType: this.hitMarkerType,
       hitMarkerAlpha: this.hitMarkerTimer > 0 ? this.hitMarkerTimer / 0.16 : 0,
+      damageFlash: this.player.damageFlash,
       damageIndicatorAngle: this.player.damageIndicatorAngle,
       damageIndicatorAlpha: this.player.damageIndicatorAlpha,
       radioMessage: this.radioMessage,
@@ -965,6 +1245,13 @@ export class GameEngine {
   private registerDebugApi(): void {
     const api: DebugApi = {
       getState: () => this.getSnapshot(),
+      getPlayerPose: () => ({
+        x: Number(this.player.position.x.toFixed(3)),
+        y: Number(this.player.position.y.toFixed(3)),
+        z: Number(this.player.position.z.toFixed(3)),
+        yaw: Number(this.player.yaw.toFixed(4)),
+        pitch: Number(this.player.pitch.toFixed(4)),
+      }),
       getZombies: () =>
         this.zombies.entities
           .filter((e) => e.active && e.state !== 'dead')
@@ -1014,6 +1301,7 @@ export class GameEngine {
         if (action === 'melee') this.pendingMeleePress = true;
         if (action === 'swap') this.pendingSwapPress = true;
         if (action === 'grenade') this.pendingGrenadePress = true;
+        if (action === 'inspect') this.weapons.triggerInspect();
       },
     };
     (window as unknown as { __HOLLOWFIELD_DEBUG__?: DebugApi }).__HOLLOWFIELD_DEBUG__ = api;
@@ -1031,8 +1319,10 @@ export class GameEngine {
     window.removeEventListener('mousemove', this.onMouseMove);
     window.removeEventListener('mousedown', this.onMouseDown);
     window.removeEventListener('mouseup', this.onMouseUp);
+    window.removeEventListener('blur', this.onWindowBlur);
     window.removeEventListener('contextmenu', this.onContextMenu);
     document.removeEventListener('pointerlockchange', this.onPointerLockChange);
+    document.removeEventListener('pointerlockerror', this.onPointerLockError);
 
     this.postProcess?.dispose();
     this.bvh.dispose();

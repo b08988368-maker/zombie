@@ -29,14 +29,14 @@ export function scheduleAfterDraw(
       polls++;
       const state = sync ? gl.getSyncParameter(sync, gl.SYNC_STATUS) : gl.SIGNALED;
       if (state === gl.UNSIGNALED && polls < 40) {
-        registerTimer(window.setTimeout(poll, 5));
+        registerTimer(window.setTimeout(poll, 4));
       } else {
         if (sync) gl.deleteSync(sync);
-        registerTimer(window.setTimeout(cb, 36));
+        registerTimer(window.setTimeout(cb, 4));
       }
     };
-    registerTimer(window.setTimeout(poll, 5));
+    registerTimer(window.setTimeout(poll, 4));
   } catch {
-    registerTimer(window.setTimeout(cb, 36));
+    registerTimer(window.setTimeout(cb, 16));
   }
 }

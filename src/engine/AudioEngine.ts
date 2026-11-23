@@ -382,15 +382,32 @@ export class AudioEngine {
     const now = this.ctx.currentTime;
     const osc = this.ctx.createOscillator();
     const g = this.ctx.createGain();
-    osc.type = 'sine';
-    osc.frequency.setValueAtTime(headshot ? 1680 : 980, now);
-    osc.frequency.exponentialRampToValueAtTime(headshot ? 2350 : 620, now + 0.055);
-    g.gain.setValueAtTime(headshot ? 0.22 : 0.14, now);
-    g.gain.exponentialRampToValueAtTime(0.001, now + 0.065);
+    osc.type = headshot ? 'triangle' : 'sine';
+    osc.frequency.setValueAtTime(headshot ? 1760 : 980, now);
+    osc.frequency.exponentialRampToValueAtTime(headshot ? 2520 : 620, now + 0.06);
+    g.gain.setValueAtTime(headshot ? 0.25 : 0.14, now);
+    g.gain.exponentialRampToValueAtTime(0.001, now + 0.075);
     osc.connect(g);
     g.connect(this.sfxGain);
     osc.start(now);
-    osc.stop(now + 0.07);
+    osc.stop(now + 0.08);
+
+    if (headshot && this.noiseBuffer) {
+      const src = this.ctx.createBufferSource();
+      src.buffer = this.noiseBuffer;
+      const bp = this.ctx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.frequency.setValueAtTime(2200, now);
+      bp.Q.value = 1.6;
+      const ng = this.ctx.createGain();
+      ng.gain.setValueAtTime(0.24, now);
+      ng.gain.exponentialRampToValueAtTime(0.001, now + 0.055);
+      src.connect(bp);
+      bp.connect(ng);
+      ng.connect(this.sfxGain);
+      src.start(now);
+      src.stop(now + 0.06);
+    }
   }
 
   public playFootstep(sprint: boolean): void {

@@ -127,6 +127,19 @@ export class InteractablesSystem {
     }
 
     // Cache full sculpted 3D weapon preview models inside the Supply Crate hologram group
+    const auraGeo = new THREE.CylinderGeometry(0.18, 0.72, 1.35, 16, 1, true);
+    const auraMat = new THREE.MeshBasicMaterial({
+      color: 0xfbbf24,
+      transparent: true,
+      opacity: 0.16,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+    const crateAura = new THREE.Mesh(auraGeo, auraMat);
+    crateAura.position.y = -0.15;
+    this.cratePreviewGroup.add(crateAura);
+
     for (const id of CRATE_ROLL_CYCLE) {
       const model = WeaponSystem.buildWeaponShowcaseModel(id, mats);
       model.scale.setScalar(1.35);
@@ -188,16 +201,28 @@ export class InteractablesSystem {
       c.lid.rotation.x = 0;
     });
     this.crateState = 'idle';
+    this.crateTimer = 0;
+    this.crateUsesLeft = this.rng.int(
+      BALANCE.economy.crate.minUsesBeforeMove,
+      BALANCE.economy.crate.maxUsesBeforeMove,
+    );
     this.cratePreviewGroup.visible = false;
 
     this.overclockState = 'idle';
+    this.overclockTimer = 0;
     this.trapState = 'ready';
+    this.trapTimer = 0;
+    this.trapDamageTick = 0;
+    this.trapHumTick = 0;
     this.map.electricTrapArcs.visible = false;
     this.map.electricTrapLight.intensity = 0;
 
     this.easterEggStep = 0;
     this.fusesCollected = 0;
     this.radioDefendTimer = 0;
+    this.eeDefenseSpawnTimer = 0;
+    this.interactHoldTimer = 0;
+    this.lastPromptId = '';
     this.map.fusePickups.forEach((f) => {
       f.collected = false;
       f.mesh.visible = false;
@@ -325,12 +350,27 @@ export class InteractablesSystem {
     }
 
     const halo = new THREE.Mesh(
-      new THREE.TorusGeometry(0.44, 0.03, 8, 22),
+      new THREE.TorusGeometry(0.44, 0.032, 8, 22),
       new THREE.MeshBasicMaterial({ color }),
     );
     halo.rotation.x = Math.PI / 2;
     halo.position.y = -0.26;
     group.add(halo);
+
+    // Translucent additive beacon shaft so dropped power-ups stand out in fog
+    const beacon = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.14, 0.42, 2.3, 12, 1, true),
+      new THREE.MeshBasicMaterial({
+        color,
+        transparent: true,
+        opacity: 0.16,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+      }),
+    );
+    beacon.position.y = 0.65;
+    group.add(beacon);
     return group;
   }
 
@@ -446,12 +486,13 @@ export class InteractablesSystem {
       this.powerUpLight.intensity = 0;
     }
 
-    // Update Supply Crate animation/timer with cycling real 3D weapon silhouettes
+    // Update Supply Crate animation/timer with cycling real 3D weapon silhouettes & rise-up curve
     const activeCrate = this.map.crateSlots[this.activeCrateSlotIdx]!;
     if (this.crateState === 'rolling') {
       this.crateTimer -= dt;
-      activeCrate.lid.rotation.x = THREE.MathUtils.damp(activeCrate.lid.rotation.x, -1.25, 10, dt);
-      const cycleIdx = Math.floor((BALANCE.economy.crate.rollDuration - this.crateTimer) * 8) % CRATE_ROLL_CYCLE.length;
+      activeCrate.lid.rotation.x = THREE.MathUtils.damp(activeCrate.lid.rotation.x, -1.32, 10, dt);
+      const rollFrac = Math.min(1, 1 - this.crateTimer / Math.max(0.1, BALANCE.economy.crate.rollDuration));
+      const cycleIdx = Math.floor((BALANCE.economy.crate.rollDuration - this.crateTimer) * 9) % CRATE_ROLL_CYCLE.length;
       const shownId = CRATE_ROLL_CYCLE[cycleIdx]!;
       for (const [id, mdl] of this.cratePreviewModels) {
         mdl.visible = id === shownId;
@@ -459,10 +500,10 @@ export class InteractablesSystem {
       this.cratePreviewGroup.visible = true;
       this.cratePreviewGroup.position.set(
         activeCrate.position.x,
-        1.1 + Math.sin(performance.now() * 0.012) * 0.09,
+        0.72 + Math.sin(rollFrac * Math.PI * 0.5) * 0.56 + Math.sin(performance.now() * 0.015) * 0.06,
         activeCrate.position.z,
       );
-      this.cratePreviewGroup.rotation.y += dt * 4.5;
+      this.cratePreviewGroup.rotation.y += dt * 4.8;
       if (this.crateTimer <= 0) {
         this.crateState = 'ready';
         this.crateTimer = BALANCE.economy.crate.takeWindow;
@@ -472,7 +513,8 @@ export class InteractablesSystem {
       }
     } else if (this.crateState === 'ready') {
       this.crateTimer -= dt;
-      this.cratePreviewGroup.position.y = 1.15 + Math.sin(performance.now() * 0.004) * 0.04;
+      const settle = Math.max(0, Math.min(1, this.crateTimer / BALANCE.economy.crate.takeWindow));
+      this.cratePreviewGroup.position.y = THREE.MathUtils.lerp(0.85, 1.24, settle) + Math.sin(performance.now() * 0.004) * 0.04;
       this.cratePreviewGroup.rotation.y += dt * 1.4;
       if (this.crateTimer <= 0) {
         this.crateState = 'idle';

@@ -19,9 +19,16 @@ interface ParticleItem {
   vx: number;
   vy: number;
   vz: number;
+  rx: number;
+  ry: number;
+  rz: number;
   life: number;
   maxLife: number;
   gravity: number;
+  startScale: number;
+  endScale: number;
+  baseOpacity: number;
+  bounce: boolean;
   active: boolean;
 }
 
@@ -52,6 +59,14 @@ interface ActiveGrenade {
   rb: DynamicGrenadeBody;
   mesh: THREE.Group;
   fuse: number;
+}
+
+interface LeftArmRig {
+  group: THREE.Group;
+  restPos: THREE.Vector3;
+  restRot: THREE.Euler;
+  magPos: THREE.Vector3;
+  rackPos: THREE.Vector3;
 }
 
 export interface ShotCallbacks {
@@ -92,6 +107,63 @@ const WEAPON_SPECS: Record<WeaponId, WeaponSpec> = {
   phase_cannon: { len: 0.56, height: 0.145, width: 0.074, hasStock: false, hasDrum: false, isLong: false, wood: false, isPhase: true },
 };
 
+const ADS_EYE_Y: Record<WeaponId, number> = {
+  service_pistol: -0.082,
+  hedgerow: -0.08,
+  rattler: -0.09,
+  ironsight: -0.09,
+  longbow: -0.104,
+  hammerfall: -0.106,
+  phase_cannon: -0.102,
+};
+
+function createGlovedHand(
+  gloveMat: THREE.Material,
+  knuckleMat: THREE.Material,
+  pose: 'grip' | 'cradle' | 'knife',
+): THREE.Group {
+  const hand = new THREE.Group();
+
+  // Sculpted compact palm / metacarpal block
+  const palm = new THREE.Mesh(new THREE.BoxGeometry(0.044, 0.046, 0.056), gloveMat);
+  hand.add(palm);
+
+  // Armored knuckle ridge
+  const knuckle = new THREE.Mesh(new THREE.BoxGeometry(0.048, 0.013, 0.02), knuckleMat);
+  knuckle.position.set(0, 0.019, -0.02);
+  hand.add(knuckle);
+
+  if (pose === 'grip' || pose === 'knife') {
+    for (let i = 0; i < 3; i++) {
+      const finger = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.011, 0.026), gloveMat);
+      finger.position.set(0, -0.008 - i * 0.013, -0.032);
+      finger.rotation.x = 0.25;
+      hand.add(finger);
+    }
+    const indexFinger = new THREE.Mesh(new THREE.BoxGeometry(0.011, 0.011, 0.036), gloveMat);
+    indexFinger.position.set(0.017, 0.009, -0.038);
+    hand.add(indexFinger);
+
+    const thumb = new THREE.Mesh(new THREE.BoxGeometry(0.013, 0.013, 0.034), gloveMat);
+    thumb.position.set(-0.024, 0.016, -0.016);
+    thumb.rotation.set(-0.3, 0.25, 0);
+    hand.add(thumb);
+  } else {
+    for (let i = 0; i < 4; i++) {
+      const finger = new THREE.Mesh(new THREE.BoxGeometry(0.01, 0.032, 0.012), gloveMat);
+      finger.position.set(0.02, 0.015, -0.02 + i * 0.013);
+      finger.rotation.z = 0.34;
+      hand.add(finger);
+    }
+    const thumb = new THREE.Mesh(new THREE.BoxGeometry(0.012, 0.03, 0.014), gloveMat);
+    thumb.position.set(-0.022, 0.015, -0.006);
+    thumb.rotation.z = -0.32;
+    hand.add(thumb);
+  }
+
+  return hand;
+}
+
 export class WeaponSystem {
   public slots: WeaponSlotState[] = [];
   public activeSlot = 0;
@@ -110,7 +182,11 @@ export class WeaponSystem {
   private readonly weaponPivot = new THREE.Group();
   private readonly weaponModels = new Map<WeaponId, THREE.Group>();
   private readonly weaponMags = new Map<WeaponId, { mesh: THREE.Object3D; baseY: number }>();
+  private readonly weaponSlides = new Map<WeaponId, { mesh: THREE.Object3D; baseZ: number }>();
+  private readonly weaponPumps = new Map<WeaponId, { mesh: THREE.Object3D; baseZ: number }>();
+  private readonly leftArms = new Map<WeaponId, LeftArmRig>();
   private readonly muzzleSprites = new Map<WeaponId, THREE.Sprite>();
+  private readonly muzzleCrosses = new Map<WeaponId, THREE.Group>();
   private readonly knifeGroup = new THREE.Group();
   private readonly bottleGroup = new THREE.Group();
   private readonly bottleLiquidMat: THREE.MeshStandardMaterial;
@@ -119,8 +195,10 @@ export class WeaponSystem {
   private readonly muzzleLights: { light: THREE.PointLight; timer: number }[] = [];
   private muzzleLightCursor = 0;
 
-  // Pooled particles, tracers, decals, shockwaves, phase bolts, grenades
+  // Pooled particles, brass casings, smoke, tracers, decals, shockwaves, phase bolts, grenades
   private readonly particles: ParticleItem[] = [];
+  private readonly shellPool: ParticleItem[] = [];
+  private readonly smokePool: ParticleItem[] = [];
   private readonly tracers: TracerItem[] = [];
   private readonly shockwaves: ShockwaveItem[] = [];
   private readonly decals: THREE.Mesh[] = [];
@@ -131,8 +209,16 @@ export class WeaponSystem {
 
   private recoilOffsetZ = 0;
   private recoilOffsetPitch = 0;
+  private recoilBloom = 0;
+  private slideKick = 0;
+  private pumpTimer = 0;
+  private inspectTimer = 0;
+  private readonly inspectDuration = 1.85;
+  private lookSwayX = 0;
+  private lookSwayY = 0;
   private swayX = 0;
   private swayY = 0;
+  private bobPhase = 0;
   private muzzleFlashTimer = 0;
 
   private readonly scene: THREE.Scene;
@@ -146,7 +232,19 @@ export class WeaponSystem {
   private readonly tmpOrigin = new THREE.Vector3();
   private readonly tmpDir = new THREE.Vector3();
   private readonly tmpVec = new THREE.Vector3();
+  private readonly tmpRight = new THREE.Vector3();
+  private readonly tmpUp = new THREE.Vector3();
   private readonly tmpQuat = new THREE.Quaternion();
+
+  private grenadeAssets: {
+    bodyGeo: THREE.BufferGeometry;
+    bandGeo: THREE.BufferGeometry;
+    collarGeo: THREE.BufferGeometry;
+    spoonGeo: THREE.BufferGeometry;
+    ringGeo: THREE.BufferGeometry;
+    castIronMat: THREE.MeshStandardMaterial;
+    ringMat: THREE.MeshStandardMaterial;
+  } | null = null;
 
   constructor(
     scene: THREE.Scene,
@@ -189,19 +287,19 @@ export class WeaponSystem {
     const accentMat = new THREE.MeshStandardMaterial({
       color: 0x38bdf8,
       emissive: 0x0ea5e9,
-      emissiveIntensity: 1.6,
+      emissiveIntensity: 1.75,
       roughness: 0.2,
     });
     const tritiumMat = new THREE.MeshBasicMaterial({ color: 0x4ade80 });
     const glassMat = new THREE.MeshStandardMaterial({
       color: 0x0f3b4c,
       emissive: 0x0c4a6e,
-      emissiveIntensity: 0.6,
+      emissiveIntensity: 0.7,
       roughness: 0.08,
       metalness: 0.9,
     });
 
-    // Lower receiver / frame + side bevel plates
+    // Lower receiver / frame + side bevel plates + flared magwell
     const recMat = spec.isPhase ? mats.gunMetal : mats.gunPolymer;
     const receiver = new THREE.Mesh(
       new THREE.BoxGeometry(spec.width, recH, spec.len * 0.54),
@@ -210,22 +308,84 @@ export class WeaponSystem {
     receiver.position.set(0, recY, -spec.len * 0.22);
     g.add(receiver);
 
-    // Upper slide / dust cover / top shroud seated flush on receiver
-    const slide = new THREE.Mesh(
+    // Side bevel cheeks for faceted mechanical silhouette
+    for (const side of [-1, 1]) {
+      const cheek = new THREE.Mesh(
+        new THREE.BoxGeometry(0.005, recH * 0.68, spec.len * 0.42),
+        mats.darkTrim,
+      );
+      cheek.position.set(side * (spec.width * 0.5 + 0.0015), recY + 0.002, -spec.len * 0.22);
+      g.add(cheek);
+    }
+
+    // Upper slide / dust cover / top rail assembly (tagged weapon_slide on pistol/phase/bolt)
+    const slideGroup = new THREE.Group();
+    const slideY = topY + recH * 0.28;
+    slideGroup.position.set(0, slideY, -spec.len * 0.24);
+    g.add(slideGroup);
+
+    const upperShell = new THREE.Mesh(
       new THREE.BoxGeometry(spec.width * 0.9, recH * 0.62, spec.len * 0.56),
       mats.gunMetal,
     );
-    slide.position.set(0, topY + recH * 0.28, -spec.len * 0.24);
-    g.add(slide);
-    const slideTopY = slide.position.y + recH * 0.31;
+    slideGroup.add(upperShell);
 
-    // Brass / chrome bolt carrier plate on right side
+    // Top Picatinny rail notches
+    if (id !== 'hedgerow' && id !== 'service_pistol') {
+      const railBar = new THREE.Mesh(
+        new THREE.BoxGeometry(spec.width * 0.56, 0.007, spec.len * 0.44),
+        mats.darkTrim,
+      );
+      railBar.position.y = recH * 0.34;
+      slideGroup.add(railBar);
+    }
+
+    // Serrations on pistol slide or charging handle on rifles/SMG/LMG
     const boltPort = new THREE.Mesh(
-      new THREE.BoxGeometry(0.004, recH * 0.36, spec.len * 0.14),
+      new THREE.BoxGeometry(0.005, recH * 0.34, spec.len * 0.14),
       mats.brushedSteel,
     );
-    boltPort.position.set(spec.width * 0.46, slide.position.y, -spec.len * 0.22);
-    g.add(boltPort);
+    boltPort.position.set(spec.width * 0.45, 0, 0.02);
+
+    if (id === 'service_pistol') {
+      slideGroup.name = 'weapon_slide';
+      slideGroup.add(boltPort);
+      // Rear slide serration ribs
+      for (let i = 0; i < 4; i++) {
+        const ser = new THREE.Mesh(new THREE.BoxGeometry(spec.width * 0.94, recH * 0.42, 0.004), mats.darkTrim);
+        ser.position.set(0, 0, spec.len * 0.22 - i * 0.01);
+        slideGroup.add(ser);
+      }
+      // Tritium sights mounted on moving pistol slide
+      const rearSight = new THREE.Mesh(new THREE.BoxGeometry(0.024, 0.014, 0.015), mats.gunMetal);
+      rearSight.position.set(0, recH * 0.38, spec.len * 0.22);
+      const frontPost = new THREE.Mesh(new THREE.BoxGeometry(0.007, 0.015, 0.012), mats.gunMetal);
+      frontPost.position.set(0, recH * 0.38, -spec.len * 0.25);
+      const frontDot = new THREE.Mesh(new THREE.BoxGeometry(0.004, 0.004, 0.004), tritiumMat);
+      frontDot.position.set(0, recH * 0.43, -spec.len * 0.244);
+      const rearDotL = new THREE.Mesh(new THREE.BoxGeometry(0.003, 0.004, 0.004), tritiumMat);
+      rearDotL.position.set(-0.007, recH * 0.42, spec.len * 0.228);
+      const rearDotR = rearDotL.clone();
+      rearDotR.position.x = 0.007;
+      slideGroup.add(rearSight, frontPost, frontDot, rearDotL, rearDotR);
+    } else {
+      // Stationary upper receiver; bolt carrier + charging handle reciprocates as weapon_slide!
+      const boltCarrier = new THREE.Group();
+      boltCarrier.name = 'weapon_slide';
+      boltCarrier.position.set(0, slideY, -spec.len * 0.22);
+      boltPort.position.set(spec.width * 0.46, 0, 0);
+      boltCarrier.add(boltPort);
+      const handleKnob = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.007, 0.007, 0.026, 8),
+        mats.brushedSteel,
+      );
+      handleKnob.rotation.z = Math.PI / 2;
+      handleKnob.position.set(spec.width * 0.56, 0.004, 0.02);
+      boltCarrier.add(handleKnob);
+      g.add(boltCarrier);
+    }
+
+    const slideTopY = slideY + recH * 0.31;
 
     // Primary barrel + stepped muzzle brake / crown
     const barrelRadius = spec.width * 0.23;
@@ -235,20 +395,19 @@ export class WeaponSystem {
       mats.gunMetal,
     );
     barrel.rotation.x = Math.PI / 2;
-    barrel.position.set(0, slide.position.y - 0.004, -spec.len * 0.55);
+    barrel.position.set(0, slideY - 0.004, -spec.len * 0.55);
     g.add(barrel);
 
     const muzzleBrake = new THREE.Mesh(
-      new THREE.CylinderGeometry(barrelRadius * 1.32, barrelRadius * 1.24, 0.036, 12),
+      new THREE.CylinderGeometry(barrelRadius * 1.38, barrelRadius * 1.24, 0.04, 12),
       mats.darkTrim,
     );
     muzzleBrake.rotation.x = Math.PI / 2;
-    muzzleBrake.position.set(0, slide.position.y - 0.004, -spec.len * 0.85);
+    muzzleBrake.position.set(0, slideY - 0.004, -spec.len * 0.85);
     g.add(muzzleBrake);
 
     // Weapon-specific silhouette assemblies
     if (id === 'hedgerow') {
-      // Underbarrel shell tube + ribbed wood pump forend
       const underTube = new THREE.Mesh(
         new THREE.CylinderGeometry(barrelRadius * 0.9, barrelRadius * 0.9, spec.len * 0.48, 12),
         mats.gunMetal,
@@ -257,21 +416,32 @@ export class WeaponSystem {
       underTube.position.set(0, recY - 0.008, -spec.len * 0.54);
       g.add(underTube);
 
+      // Animated pump-action forend group!
+      const pumpGroup = new THREE.Group();
+      pumpGroup.name = 'weapon_pump';
+      pumpGroup.position.set(0, recY - 0.008, -spec.len * 0.5);
       const pump = new THREE.Mesh(
-        new THREE.CylinderGeometry(spec.width * 0.52, spec.width * 0.52, spec.len * 0.26, 12),
+        new THREE.CylinderGeometry(spec.width * 0.54, spec.width * 0.52, spec.len * 0.26, 12),
         mats.gunWood,
       );
       pump.rotation.x = Math.PI / 2;
-      pump.position.set(0, recY - 0.008, -spec.len * 0.5);
-      g.add(pump);
+      pumpGroup.add(pump);
+      for (const rz of [-0.055, 0, 0.055]) {
+        const ring = new THREE.Mesh(
+          new THREE.TorusGeometry(spec.width * 0.53, 0.004, 6, 14),
+          mats.darkTrim,
+        );
+        ring.position.z = rz;
+        pumpGroup.add(ring);
+      }
+      g.add(pumpGroup);
     } else if (id === 'rattler') {
-      // Perforated cooling barrel shroud + folding wire butt + front grip
       const shroud = new THREE.Mesh(
-        new THREE.CylinderGeometry(barrelRadius * 1.65, barrelRadius * 1.65, spec.len * 0.26, 10),
+        new THREE.CylinderGeometry(barrelRadius * 1.7, barrelRadius * 1.7, spec.len * 0.28, 10),
         mats.darkTrim,
       );
       shroud.rotation.x = Math.PI / 2;
-      shroud.position.set(0, slide.position.y - 0.004, -spec.len * 0.58);
+      shroud.position.set(0, slideY - 0.004, -spec.len * 0.58);
       g.add(shroud);
 
       const foreGrip = new THREE.Mesh(
@@ -281,7 +451,6 @@ export class WeaponSystem {
       foreGrip.position.set(0, -0.056, -spec.len * 0.52);
       g.add(foreGrip);
     } else if (spec.isLong) {
-      // Handguard / wood forend
       const forend = new THREE.Mesh(
         new THREE.BoxGeometry(spec.width * 0.96, recH * 0.58, spec.len * 0.34),
         spec.wood ? mats.gunWood : mats.gunPolymer,
@@ -291,13 +460,12 @@ export class WeaponSystem {
 
       if (id === 'ironsight') {
         const gasBlock = new THREE.Mesh(
-          new THREE.BoxGeometry(spec.width * 0.5, 0.035, 0.032),
+          new THREE.BoxGeometry(spec.width * 0.5, 0.036, 0.032),
           mats.gunMetal,
         );
         gasBlock.position.set(0, slideTopY + 0.01, -spec.len * 0.64);
         g.add(gasBlock);
       } else if (id === 'hammerfall') {
-        // Carry handle + cooling ribs + folded bipod legs
         const carryBar = new THREE.Mesh(
           new THREE.BoxGeometry(0.018, 0.018, 0.16),
           mats.gunMetal,
@@ -325,12 +493,17 @@ export class WeaponSystem {
     grip.rotation.x = 0.24;
     g.add(grip);
 
-    const triggerGuard = new THREE.Mesh(
-      new THREE.BoxGeometry(spec.width * 0.38, 0.026, 0.056),
+    const triggerGuardBottom = new THREE.Mesh(
+      new THREE.BoxGeometry(spec.width * 0.34, 0.006, 0.056),
       mats.gunMetal,
     );
-    triggerGuard.position.set(0, -0.036, -0.072);
-    g.add(triggerGuard);
+    triggerGuardBottom.position.set(0, -0.046, -0.072);
+    const triggerGuardFront = new THREE.Mesh(
+      new THREE.BoxGeometry(spec.width * 0.34, 0.024, 0.007),
+      mats.gunMetal,
+    );
+    triggerGuardFront.position.set(0, -0.035, -0.098);
+    g.add(triggerGuardBottom, triggerGuardFront);
 
     const trigger = new THREE.Mesh(
       new THREE.BoxGeometry(0.008, 0.02, 0.012),
@@ -350,7 +523,16 @@ export class WeaponSystem {
       drum.position.set(0, -0.078, -0.2);
       drum.name = 'weapon_mag';
       g.add(drum);
-    } else if (id !== 'hedgerow' && id !== 'service_pistol') {
+    } else if (id === 'service_pistol') {
+      const pistolMag = new THREE.Mesh(
+        new THREE.BoxGeometry(spec.width * 0.56, 0.11, 0.034),
+        mats.gunMetal,
+      );
+      pistolMag.position.set(0, -0.088, -0.025);
+      pistolMag.rotation.x = 0.24;
+      pistolMag.name = 'weapon_mag';
+      g.add(pistolMag);
+    } else if (id !== 'hedgerow') {
       const magLen = id === 'rattler' ? 0.15 : 0.13;
       const mag = new THREE.Mesh(
         new THREE.BoxGeometry(spec.width * 0.6, magLen, 0.042),
@@ -398,7 +580,7 @@ export class WeaponSystem {
       const coreMat = new THREE.MeshStandardMaterial({
         color: 0x6366f1,
         emissive: 0x818cf8,
-        emissiveIntensity: 2.0,
+        emissiveIntensity: 2.1,
         roughness: 0.15,
       });
       const chamber = new THREE.Mesh(
@@ -411,7 +593,7 @@ export class WeaponSystem {
 
       for (const cz of [-0.32, -0.4, -0.47]) {
         const coil = new THREE.Mesh(new THREE.TorusGeometry(0.044, 0.009, 8, 18), coreMat);
-        coil.position.set(0, slide.position.y, cz);
+        coil.position.set(0, slideY, cz);
         g.add(coil);
       }
       for (const side of [-1, 1]) {
@@ -419,17 +601,16 @@ export class WeaponSystem {
           new THREE.BoxGeometry(0.012, 0.048, 0.28),
           mats.brushedSteel,
         );
-        railFin.position.set(side * (spec.width * 0.56), slide.position.y, -0.34);
+        railFin.position.set(side * (spec.width * 0.56), slideY, -0.34);
         g.add(railFin);
       }
-    } else {
+    } else if (id !== 'service_pistol') {
       const rearSight = new THREE.Mesh(new THREE.BoxGeometry(0.024, 0.014, 0.016), mats.gunMetal);
       rearSight.position.set(0, slideTopY + 0.007, -spec.len * 0.02);
       const frontPost = new THREE.Mesh(new THREE.BoxGeometry(0.007, 0.016, 0.012), mats.gunMetal);
       frontPost.position.set(0, slideTopY + 0.007, -spec.len * 0.51);
       g.add(rearSight, frontPost);
 
-      // Glowing tritium sight dots
       const frontDot = new THREE.Mesh(new THREE.BoxGeometry(0.004, 0.004, 0.004), tritiumMat);
       frontDot.position.set(0, slideTopY + 0.012, -spec.len * 0.503);
       const rearDotL = new THREE.Mesh(new THREE.BoxGeometry(0.003, 0.004, 0.004), tritiumMat);
@@ -459,14 +640,30 @@ export class WeaponSystem {
     this.reloadTimer = 0;
     this.fireCooldown = 0;
     this.swapTimer = 0;
+    this.inspectTimer = 0;
+    this.slideKick = 0;
+    this.pumpTimer = 0;
+    this.lookSwayX = 0;
+    this.lookSwayY = 0;
     this.recoilOffsetZ = 0;
     this.recoilOffsetPitch = 0;
+    this.recoilBloom = 0;
     this.activeGrenades.forEach((g) => {
       this.scene.remove(g.mesh);
       this.physics.removeGrenadeBody(g.rb.id);
     });
     this.activeGrenades.length = 0;
     this.syncVisibleViewmodel();
+  }
+
+  public addLookSway(dx: number, dy: number): void {
+    this.lookSwayX = THREE.MathUtils.clamp(this.lookSwayX - dx * 0.00024, -0.028, 0.028);
+    this.lookSwayY = THREE.MathUtils.clamp(this.lookSwayY + dy * 0.0002, -0.022, 0.022);
+  }
+
+  public triggerInspect(): void {
+    if (this.isReloading || this.swapTimer > 0) return;
+    this.inspectTimer = this.inspectDuration;
   }
 
   public createSlotState(id: WeaponId, upgraded: boolean): WeaponSlotState {
@@ -494,7 +691,19 @@ export class WeaponSystem {
     return BALANCE.weapons[this.getActiveWeapon().id];
   }
 
+  public getCrosshairSpread(player: PlayerController): number {
+    const cfg = this.getActiveConfig();
+    const base = player.isAds ? cfg.spreadAds : cfg.spreadHip;
+    const moveSpeed = Math.hypot(player.velocity.x, player.velocity.z);
+    const moveFactor = Math.min(1, moveSpeed / BALANCE.player.sprintSpeed);
+    const sprintBoost = player.isSprinting ? 0.45 : moveFactor * 0.2;
+    const crouchTighten = player.isCrouching ? 0.72 : 1.0;
+    const normalized = Math.min(1, base * 11 * crouchTighten + sprintBoost + this.recoilBloom);
+    return Number(normalized.toFixed(3));
+  }
+
   public giveWeapon(id: WeaponId, upgraded = false): void {
+    this.inspectTimer = 0;
     const existingIdx = this.slots.findIndex((s) => s.id === id);
     if (existingIdx !== -1) {
       const s = this.slots[existingIdx]!;
@@ -524,6 +733,7 @@ export class WeaponSystem {
     const upgraded = this.createSlotState(slot.id, true);
     this.slots[this.activeSlot] = upgraded;
     this.isReloading = false;
+    this.inspectTimer = this.inspectDuration * 0.85;
     this.syncVisibleViewmodel();
   }
 
@@ -558,9 +768,16 @@ export class WeaponSystem {
   }
 
   private buildAllViewmodels(): void {
-    const sleeveMat = new THREE.MeshStandardMaterial({ color: 0x2a332e, roughness: 0.86 });
-    const cuffMat = new THREE.MeshStandardMaterial({ color: 0x1e2521, roughness: 0.9 });
-    const gloveMat = new THREE.MeshStandardMaterial({ color: 0x1a1a1c, roughness: 0.72 });
+    const sleeveMat = new THREE.MeshStandardMaterial({ color: 0x2c3630, roughness: 0.84 });
+    const cuffMat = new THREE.MeshStandardMaterial({ color: 0x1d2420, roughness: 0.9 });
+    const gloveMat = new THREE.MeshStandardMaterial({ color: 0x1b1c1f, roughness: 0.68 });
+    const knuckleMat = new THREE.MeshStandardMaterial({ color: 0x2a2c31, roughness: 0.45, metalness: 0.25 });
+    const watchFaceMat = new THREE.MeshStandardMaterial({
+      color: 0x0f172a,
+      emissive: 0x22c55e,
+      emissiveIntensity: 0.45,
+      roughness: 0.2,
+    });
 
     (Object.keys(WEAPON_SPECS) as WeaponId[]).forEach((id) => {
       const spec = WEAPON_SPECS[id];
@@ -570,88 +787,153 @@ export class WeaponSystem {
       if (magObj) {
         this.weaponMags.set(id, { mesh: magObj, baseY: magObj.position.y });
       }
-
-      // Right forearm, cuff & gloved trigger hand
-      const arm = new THREE.Mesh(new THREE.CylinderGeometry(0.036, 0.042, 0.3, 10), sleeveMat);
-      arm.rotation.set(Math.PI / 2 - 0.22, 0, -0.2);
-      arm.position.set(0.052, -0.105, 0.14);
-      g.add(arm);
-
-      const cuff = new THREE.Mesh(new THREE.CylinderGeometry(0.038, 0.038, 0.03, 10), cuffMat);
-      cuff.rotation.set(Math.PI / 2 - 0.22, 0, -0.2);
-      cuff.position.set(0.025, -0.088, 0.025);
-      g.add(cuff);
-
-      const hand = new THREE.Mesh(new THREE.BoxGeometry(0.062, 0.064, 0.082), gloveMat);
-      hand.position.set(0, -0.072, -0.015);
-      g.add(hand);
-
-      // Left support arm cradling forend on two-handed / long weapons
-      if (spec.isLong || spec.isPhase) {
-        const shoulder = new THREE.Vector3(-0.22, -0.22, 0.08);
-        const gripPt = new THREE.Vector3(-0.015, -0.026, -spec.len * 0.49);
-        const armVec = gripPt.clone().sub(shoulder);
-        const armLen = armVec.length();
-        const leftArm = new THREE.Mesh(
-          new THREE.CylinderGeometry(0.032, 0.04, armLen, 10),
-          sleeveMat,
-        );
-        leftArm.position.copy(shoulder).lerp(gripPt, 0.5);
-        leftArm.quaternion.setFromUnitVectors(
-          new THREE.Vector3(0, 1, 0),
-          armVec.clone().normalize(),
-        );
-        g.add(leftArm);
-
-        const leftHand = new THREE.Mesh(new THREE.BoxGeometry(0.058, 0.05, 0.082), gloveMat);
-        leftHand.position.copy(gripPt);
-        g.add(leftHand);
+      const slideObj = g.getObjectByName('weapon_slide');
+      if (slideObj) {
+        this.weaponSlides.set(id, { mesh: slideObj, baseZ: slideObj.position.z });
+      }
+      const pumpObj = g.getObjectByName('weapon_pump');
+      if (pumpObj) {
+        this.weaponPumps.set(id, { mesh: pumpObj, baseZ: pumpObj.position.z });
       }
 
-      // Muzzle flash sprite positioned at barrel crown
+      // Articulated Right Forearm, Cuff, Tactical Watch & Gloved Trigger Hand
+      const rightGroup = new THREE.Group();
+      const rightArm = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.043, 0.3, 12), sleeveMat);
+      rightArm.rotation.set(Math.PI / 2 - 0.22, 0, -0.2);
+      rightArm.position.set(0.052, -0.105, 0.14);
+      rightGroup.add(rightArm);
+
+      const cuff = new THREE.Mesh(new THREE.CylinderGeometry(0.037, 0.038, 0.032, 12), cuffMat);
+      cuff.rotation.set(Math.PI / 2 - 0.22, 0, -0.2);
+      cuff.position.set(0.025, -0.088, 0.025);
+      rightGroup.add(cuff);
+
+      const rHand = createGlovedHand(gloveMat, knuckleMat, 'grip');
+      rHand.position.set(0, -0.068, -0.015);
+      rightGroup.add(rHand);
+      g.add(rightGroup);
+
+      // Articulated Left Support Arm
+      const leftArmGroup = new THREE.Group();
+      const isPistolLike = !spec.isLong && !spec.isPhase && id !== 'rattler';
+      const restGripPos = isPistolLike
+        ? new THREE.Vector3(-0.022, -0.092, 0.006)
+        : id === 'rattler'
+          ? new THREE.Vector3(-0.015, -0.05, -spec.len * 0.48)
+          : new THREE.Vector3(-0.014, -0.024, -spec.len * 0.49);
+
+      leftArmGroup.position.copy(restGripPos);
+      const restRot = new THREE.Euler(0, isPistolLike ? 0.35 : 0, 0);
+      leftArmGroup.rotation.copy(restRot);
+
+      const lHand = createGlovedHand(gloveMat, knuckleMat, isPistolLike ? 'grip' : 'cradle');
+      leftArmGroup.add(lHand);
+
+      // Wristwatch & sleeve extending diagonally back toward left shoulder
+      const lCuff = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.037, 0.034, 12), cuffMat);
+      lCuff.position.set(-0.04, -0.045, 0.075);
+      lCuff.rotation.set(Math.PI / 2 - 0.38, 0.35, 0.2);
+      leftArmGroup.add(lCuff);
+
+      const watch = new THREE.Mesh(new THREE.CylinderGeometry(0.015, 0.015, 0.01, 10), this.mats.brushedSteel);
+      watch.position.set(-0.026, -0.018, 0.065);
+      watch.rotation.z = 0.7;
+      const dial = new THREE.Mesh(new THREE.CircleGeometry(0.011, 10), watchFaceMat);
+      dial.position.set(-0.031, -0.014, 0.065);
+      dial.rotation.y = -Math.PI / 2;
+      leftArmGroup.add(watch, dial);
+
+      const sleeve = new THREE.Mesh(new THREE.CylinderGeometry(0.034, 0.042, 0.34, 12), sleeveMat);
+      sleeve.position.set(-0.115, -0.115, 0.21);
+      sleeve.rotation.set(Math.PI / 2 - 0.38, 0.36, 0.2);
+      leftArmGroup.add(sleeve);
+
+      g.add(leftArmGroup);
+
+      const magAnchor = magObj
+        ? new THREE.Vector3(magObj.position.x - 0.02, magObj.position.y - 0.02, magObj.position.z + 0.02)
+        : new THREE.Vector3(-0.015, -0.05, -spec.len * 0.32);
+      const rackAnchor = new THREE.Vector3(-0.03, 0.035, -spec.len * 0.16);
+
+      this.leftArms.set(id, {
+        group: leftArmGroup,
+        restPos: restGripPos.clone(),
+        restRot,
+        magPos: magAnchor,
+        rackPos: rackAnchor,
+      });
+
+      // Muzzle flash sprite + crossed star flash planes at barrel crown
+      const muzzlePos = new THREE.Vector3(0, spec.height * 0.28, -spec.len * 0.9);
+      const flashColor = spec.isPhase ? 0x818cf8 : 0xffd28a;
       const mfMat = new THREE.SpriteMaterial({
         map: this.mats.muzzleFlashTex,
-        color: spec.isPhase ? 0x818cf8 : 0xffd28a,
+        color: flashColor,
         transparent: true,
         opacity: 0,
         depthWrite: false,
         blending: THREE.AdditiveBlending,
       });
       const mf = new THREE.Sprite(mfMat);
-      mf.position.set(0, spec.height * 0.28, -spec.len * 0.9);
-      mf.scale.set(0.24, 0.24, 0.24);
+      mf.position.copy(muzzlePos);
+      mf.scale.set(0.26, 0.26, 0.26);
       g.add(mf);
 
+      const crossGrp = new THREE.Group();
+      crossGrp.position.copy(muzzlePos);
+      const crossMat = new THREE.MeshBasicMaterial({
+        map: this.mats.muzzleFlashTex,
+        color: flashColor,
+        transparent: true,
+        opacity: 0.9,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+        blending: THREE.AdditiveBlending,
+      });
+      const planeA = new THREE.Mesh(new THREE.PlaneGeometry(0.18, 0.26), crossMat);
+      planeA.rotation.x = Math.PI / 2;
+      const planeB = planeA.clone();
+      planeB.rotation.z = Math.PI / 2;
+      crossGrp.add(planeA, planeB);
+      crossGrp.visible = false;
+      g.add(crossGrp);
+
       this.muzzleSprites.set(id, mf);
+      this.muzzleCrosses.set(id, crossGrp);
       this.weaponModels.set(id, g);
       this.weaponPivot.add(g);
     });
 
-    // Combat Bowie knife viewmodel (steel blade + spine + brass crossguard + stacked handle + glove)
+    // Combat Bowie Knife Viewmodel with Forearm Sleeve + Cuff + Gloved Hand
     const blade = new THREE.Mesh(new THREE.BoxGeometry(0.008, 0.038, 0.22), this.mats.brushedSteel);
     blade.position.set(0, 0, -0.14);
+    const bladeEdge = new THREE.Mesh(new THREE.BoxGeometry(0.003, 0.01, 0.21), this.mats.gunMetal);
+    bladeEdge.position.set(0, 0.018, -0.135);
     const bladeTip = new THREE.Mesh(new THREE.ConeGeometry(0.019, 0.065, 4), this.mats.brushedSteel);
     bladeTip.rotation.x = -Math.PI / 2;
     bladeTip.rotation.z = Math.PI / 4;
     bladeTip.position.set(0, 0, -0.275);
-    const guard = new THREE.Mesh(new THREE.BoxGeometry(0.018, 0.065, 0.016), this.mats.gunMetal);
+    const guard = new THREE.Mesh(new THREE.BoxGeometry(0.018, 0.068, 0.016), this.mats.gunBrass);
     guard.position.set(0, 0, -0.03);
     const kHandle = new THREE.Mesh(new THREE.CylinderGeometry(0.016, 0.018, 0.12, 10), this.mats.gunWood);
     kHandle.rotation.x = Math.PI / 2;
     kHandle.position.set(0, 0, 0.035);
-    const kGlove = new THREE.Mesh(new THREE.BoxGeometry(0.056, 0.056, 0.085), gloveMat);
-    kGlove.position.set(0, -0.005, 0.035);
-    this.knifeGroup.add(blade, bladeTip, guard, kHandle, kGlove);
+    const kHand = createGlovedHand(gloveMat, knuckleMat, 'knife');
+    kHand.position.set(0, -0.004, 0.035);
+    const kArm = new THREE.Mesh(new THREE.CylinderGeometry(0.034, 0.042, 0.28, 10), sleeveMat);
+    kArm.rotation.set(Math.PI / 2 - 0.15, 0, -0.18);
+    kArm.position.set(0.038, -0.035, 0.17);
+    this.knifeGroup.add(blade, bladeEdge, bladeTip, guard, kHandle, kHand, kArm);
     this.knifeGroup.visible = false;
     this.viewmodelRoot.add(this.knifeGroup);
 
-    // Perk drink glass bottle viewmodel (dark bottle, glowing liquid, label band & crimped cap)
+    // Perk Drink Glass Bottle Viewmodel + Forearm & Glove
     const outerGlassMat = new THREE.MeshStandardMaterial({
       color: 0x1e2924,
       roughness: 0.12,
       metalness: 0.25,
       transparent: true,
-      opacity: 0.72,
+      opacity: 0.74,
     });
     const labelMat = new THREE.MeshStandardMaterial({ color: 0xe6dec8, roughness: 0.85 });
     const glassBody = new THREE.Mesh(new THREE.CylinderGeometry(0.034, 0.036, 0.17, 14), outerGlassMat);
@@ -661,39 +943,57 @@ export class WeaponSystem {
     neck.position.y = 0.115;
     const cap = new THREE.Mesh(new THREE.CylinderGeometry(0.016, 0.016, 0.014, 12), this.mats.brushedSteel);
     cap.position.y = 0.15;
-    this.bottleGroup.add(glassBody, innerLiquid, bottleLabel, neck, cap);
+    const bHand = createGlovedHand(gloveMat, knuckleMat, 'grip');
+    bHand.position.set(0.01, -0.02, 0.01);
+    const bArm = new THREE.Mesh(new THREE.CylinderGeometry(0.034, 0.042, 0.28, 10), sleeveMat);
+    bArm.rotation.set(Math.PI / 2 - 0.25, 0, -0.25);
+    bArm.position.set(0.06, -0.09, 0.14);
+    this.bottleGroup.add(glassBody, innerLiquid, bottleLabel, neck, cap, bHand, bArm);
     this.bottleGroup.position.set(0.05, -0.18, -0.35);
     this.bottleGroup.visible = false;
     this.viewmodelRoot.add(this.bottleGroup);
   }
 
   private buildGrenadeMesh(): THREE.Group {
+    if (!this.grenadeAssets) {
+      this.grenadeAssets = {
+        bodyGeo: new THREE.SphereGeometry(0.088, 12, 10),
+        bandGeo: new THREE.CylinderGeometry(0.082, 0.082, 0.026, 12),
+        collarGeo: new THREE.CylinderGeometry(0.026, 0.032, 0.045, 10),
+        spoonGeo: new THREE.BoxGeometry(0.018, 0.1, 0.01),
+        ringGeo: new THREE.TorusGeometry(0.024, 0.004, 6, 12),
+        castIronMat: new THREE.MeshStandardMaterial({
+          color: 0x384534,
+          roughness: 0.68,
+          metalness: 0.45,
+        }),
+        ringMat: new THREE.MeshStandardMaterial({
+          color: 0xeab308,
+          metalness: 0.85,
+          roughness: 0.25,
+        }),
+      };
+    }
+    const assets = this.grenadeAssets;
     const grp = new THREE.Group();
-    const castIron = new THREE.MeshStandardMaterial({
-      color: 0x384534,
-      roughness: 0.68,
-      metalness: 0.45,
-    });
-    const body = new THREE.Mesh(new THREE.SphereGeometry(0.088, 12, 10), castIron);
+
+    const body = new THREE.Mesh(assets.bodyGeo, assets.castIronMat);
     body.scale.set(0.88, 1.18, 0.88);
     grp.add(body);
 
-    const band = new THREE.Mesh(new THREE.CylinderGeometry(0.082, 0.082, 0.026, 12), this.mats.darkTrim);
+    const band = new THREE.Mesh(assets.bandGeo, this.mats.darkTrim);
     grp.add(band);
 
-    const fuseCollar = new THREE.Mesh(new THREE.CylinderGeometry(0.026, 0.032, 0.045, 10), this.mats.brushedSteel);
+    const fuseCollar = new THREE.Mesh(assets.collarGeo, this.mats.brushedSteel);
     fuseCollar.position.y = 0.11;
     grp.add(fuseCollar);
 
-    const spoon = new THREE.Mesh(new THREE.BoxGeometry(0.018, 0.1, 0.01), this.mats.brushedSteel);
+    const spoon = new THREE.Mesh(assets.spoonGeo, this.mats.brushedSteel);
     spoon.position.set(0.045, 0.075, 0);
     spoon.rotation.z = -0.24;
     grp.add(spoon);
 
-    const pinRing = new THREE.Mesh(
-      new THREE.TorusGeometry(0.024, 0.004, 6, 12),
-      new THREE.MeshStandardMaterial({ color: 0xeab308, metalness: 0.85, roughness: 0.25 }),
-    );
+    const pinRing = new THREE.Mesh(assets.ringGeo, assets.ringMat);
     pinRing.position.set(-0.035, 0.12, 0);
     grp.add(pinRing);
 
@@ -709,7 +1009,7 @@ export class WeaponSystem {
     }
 
     // Pooled impact & blood particles
-    const pGeo = new THREE.BoxGeometry(0.055, 0.055, 0.055);
+    const pGeo = new THREE.BoxGeometry(0.048, 0.048, 0.048);
     for (let i = 0; i < BALANCE.perf.maxParticles; i++) {
       const mat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9 });
       const mesh = new THREE.Mesh(pGeo, mat);
@@ -720,15 +1020,79 @@ export class WeaponSystem {
         vx: 0,
         vy: 0,
         vz: 0,
+        rx: 0,
+        ry: 0,
+        rz: 0,
         life: 0,
         maxLife: 0.5,
         gravity: 9.8,
+        startScale: 1,
+        endScale: 0.65,
+        baseOpacity: 0.95,
+        bounce: true,
+        active: false,
+      });
+    }
+
+    // Pooled spinning 3D brass shell casings
+    const shellGeo = new THREE.CylinderGeometry(0.008, 0.008, 0.032, 7);
+    shellGeo.rotateX(Math.PI / 2);
+    for (let i = 0; i < 20; i++) {
+      const mesh = new THREE.Mesh(shellGeo, this.mats.gunBrass);
+      mesh.visible = false;
+      this.scene.add(mesh);
+      this.shellPool.push({
+        mesh,
+        vx: 0,
+        vy: 0,
+        vz: 0,
+        rx: 0,
+        ry: 0,
+        rz: 0,
+        life: 0,
+        maxLife: 0.85,
+        gravity: 11.0,
+        startScale: 1,
+        endScale: 1,
+        baseOpacity: 1,
+        bounce: true,
+        active: false,
+      });
+    }
+
+    // Pooled barrel muzzle smoke puffs
+    const smokeGeo = new THREE.DodecahedronGeometry(0.08, 0);
+    for (let i = 0; i < 18; i++) {
+      const mat = new THREE.MeshBasicMaterial({
+        color: 0xb0b8b4,
+        transparent: true,
+        opacity: 0.35,
+        depthWrite: false,
+      });
+      const mesh = new THREE.Mesh(smokeGeo, mat);
+      mesh.visible = false;
+      this.scene.add(mesh);
+      this.smokePool.push({
+        mesh,
+        vx: 0,
+        vy: 0,
+        vz: 0,
+        rx: 0,
+        ry: 0,
+        rz: 0,
+        life: 0,
+        maxLife: 0.55,
+        gravity: -0.45,
+        startScale: 0.45,
+        endScale: 2.3,
+        baseOpacity: 0.36,
+        bounce: false,
         active: false,
       });
     }
 
     // Pooled tracers
-    const tGeo = new THREE.BoxGeometry(0.02, 0.02, 1);
+    const tGeo = new THREE.BoxGeometry(0.018, 0.018, 1);
     for (let i = 0; i < 24; i++) {
       const mat = new THREE.MeshBasicMaterial({
         color: 0xffd27a,
@@ -774,7 +1138,7 @@ export class WeaponSystem {
       this.decals.push(decal);
     }
 
-    // Phase Cannon energy bolts (1 shared light avoids compiling 8 lights into every shader)
+    // Phase Cannon energy bolts
     this.phaseLight = new THREE.PointLight(0x818cf8, 0, 7, 1.8);
     this.scene.add(this.phaseLight);
     const coreGeo = new THREE.SphereGeometry(0.11, 10, 10);
@@ -817,6 +1181,8 @@ export class WeaponSystem {
     this.fireCooldown = Math.max(0, this.fireCooldown - dt);
     this.swapTimer = Math.max(0, this.swapTimer - dt);
     this.muzzleFlashTimer = Math.max(0, this.muzzleFlashTimer - dt);
+    this.pumpTimer = Math.max(0, this.pumpTimer - dt);
+    this.inspectTimer = Math.max(0, this.inspectTimer - dt);
 
     for (const ml of this.muzzleLights) {
       if (ml.timer > 0) {
@@ -829,6 +1195,10 @@ export class WeaponSystem {
       this.semiTriggerConsumed = false;
     }
 
+    if (player.isAds || player.isSprinting || this.isReloading || input.fireHeld) {
+      this.inspectTimer = 0;
+    }
+
     const active = this.getActiveWeapon();
     const cfg = BALANCE.weapons[active.id];
 
@@ -836,6 +1206,8 @@ export class WeaponSystem {
     if (input.swapPressed && this.slots.length > 1 && this.swapTimer <= 0 && !player.isReviving) {
       this.activeSlot = (this.activeSlot + 1) % this.slots.length;
       this.isReloading = false;
+      this.inspectTimer = 0;
+      this.pumpTimer = 0;
       const nextCfg = this.getActiveConfig();
       const speedMult = perks.has('quickhands') ? 2.0 : 1.0;
       this.swapTimer = nextCfg.swapTime / speedMult;
@@ -875,17 +1247,22 @@ export class WeaponSystem {
       }
     }
 
-    // Melee knife (lunge forward + round-scaled damage from balance.ts)
+    // Melee knife
     if (input.meleePressed && player.meleeCooldown <= 0 && !player.isReviving) {
       player.meleeCooldown = BALANCE.player.knifeCooldown;
-      player.knifeAnimTimer = 0.28;
+      player.knifeAnimTimer = 0.3;
       player.applyKnifeLunge(player.yaw);
       this.isReloading = false;
+      this.inspectTimer = 0;
       this.audio.playMeleeSwing();
 
-      player.getEyePosition(this.tmpOrigin);
+      this.camera.getWorldPosition(this.tmpOrigin);
       this.camera.getWorldDirection(this.tmpDir);
-      const hit = this.zombies.raycastShot(this.tmpOrigin, this.tmpDir, BALANCE.player.knifeRange);
+      const wallHit = this.bvh.raycast(this.tmpOrigin, this.tmpDir, BALANCE.player.knifeRange);
+      const maxMeleeDist = wallHit ? wallHit.distance : BALANCE.player.knifeRange;
+      const hit =
+        this.zombies.raycastShot(this.tmpOrigin, this.tmpDir, maxMeleeDist) ??
+        this.zombies.raycastMeleeCone(this.tmpOrigin, this.tmpDir, maxMeleeDist + 0.35, 0.55);
       if (hit) {
         const dmg =
           BALANCE.player.knifeDamageBase +
@@ -915,7 +1292,7 @@ export class WeaponSystem {
     // Throw composite frag grenade
     if (input.grenadePressed && player.grenades > 0 && !player.isReviving) {
       player.grenades--;
-      player.getEyePosition(this.tmpOrigin);
+      this.camera.getWorldPosition(this.tmpOrigin);
       this.camera.getWorldDirection(this.tmpDir);
       const spawnP = this.tmpOrigin.clone().addScaledVector(this.tmpDir, 0.55);
       const vx = this.tmpDir.x * BALANCE.player.grenadeThrowSpeed;
@@ -964,6 +1341,7 @@ export class WeaponSystem {
 
   private beginReload(active: WeaponSlotState, cfg: WeaponConfig, perks: Set<PerkId>): void {
     this.isReloading = true;
+    this.inspectTimer = 0;
     this.reloadTimer = 0;
     this.reloadCueInPlayed = false;
     this.reloadCueRackPlayed = false;
@@ -993,33 +1371,43 @@ export class WeaponSystem {
       (Math.random() - 0.5) * cfg.recoilYaw * 2,
       cfg.cameraKick,
     );
-    this.recoilOffsetZ = Math.min(0.085, this.recoilOffsetZ + 0.055);
-    this.recoilOffsetPitch = Math.min(0.25, this.recoilOffsetPitch + 0.12);
-    this.muzzleFlashTimer = 0.055;
+    this.recoilOffsetZ = Math.min(0.092, this.recoilOffsetZ + 0.06);
+    this.recoilOffsetPitch = Math.min(0.28, this.recoilOffsetPitch + 0.135);
+    this.recoilBloom = Math.min(0.75, this.recoilBloom + (player.isAds ? 0.14 : 0.28));
+    this.slideKick = 0.044;
+    if (active.id === 'hedgerow') {
+      this.pumpTimer = Math.min(0.55, this.fireCooldown * 0.85);
+    }
+    this.muzzleFlashTimer = 0.058;
 
     // Pooled dynamic muzzle light (max 2)
     const ml = this.muzzleLights[this.muzzleLightCursor]!;
     this.muzzleLightCursor = (this.muzzleLightCursor + 1) % this.muzzleLights.length;
-    player.getEyePosition(this.tmpOrigin);
+    this.camera.getWorldPosition(this.tmpOrigin);
     this.camera.getWorldDirection(this.tmpDir);
+    this.tmpRight.set(1, 0, 0).applyQuaternion(this.camera.quaternion).normalize();
+    this.tmpUp.set(0, 1, 0).applyQuaternion(this.camera.quaternion).normalize();
+
     ml.light.position.copy(this.tmpOrigin).addScaledVector(this.tmpDir, 0.75);
     ml.light.color.setHex(active.id === 'phase_cannon' ? 0x818cf8 : 0xffb85c);
     ml.light.intensity = 3.2;
     ml.timer = 0.05;
 
-    // Brass shell ejection particle
+    // Spinning 3D brass shell ejection + barrel smoke puff
     if (active.id !== 'phase_cannon') {
-      const right = new THREE.Vector3(1, 0, 0).applyQuaternion(this.camera.quaternion);
-      const ejectPos = this.tmpOrigin.clone().addScaledVector(this.tmpDir, 0.4).addScaledVector(right, 0.22);
-      this.spawnSingleParticle(
-        ejectPos,
-        right.x * 2.2 + (Math.random() - 0.5) * 0.5,
-        1.8 + Math.random() * 0.6,
-        right.z * 2.2 + (Math.random() - 0.5) * 0.5,
-        0xd9a441,
-        0.55,
-      );
+      const ejectPos = this.tmpOrigin
+        .clone()
+        .addScaledVector(this.tmpDir, 0.38)
+        .addScaledVector(this.tmpRight, 0.19)
+        .addScaledVector(this.tmpUp, -0.09);
+      this.spawnShellCasing(ejectPos, this.tmpRight, this.tmpUp, this.tmpDir);
     }
+    const muzzleSmokePos = this.tmpOrigin
+      .clone()
+      .addScaledVector(this.tmpDir, 0.85)
+      .addScaledVector(this.tmpRight, player.isAds ? 0 : 0.12)
+      .addScaledVector(this.tmpUp, -0.06);
+    this.spawnSmokePuff(muzzleSmokePos, this.tmpDir);
 
     // Phase Cannon fires slow energy bolt
     if (cfg.fireMode === 'projectile') {
@@ -1028,7 +1416,7 @@ export class WeaponSystem {
         bolt.active = true;
         bolt.life = 4.0;
         bolt.upgraded = active.upgraded;
-        bolt.pos.copy(this.tmpOrigin).addScaledVector(this.tmpDir, 0.6);
+        bolt.pos.copy(this.tmpOrigin).addScaledVector(this.tmpDir, 0.2);
         bolt.vel.copy(this.tmpDir).multiplyScalar(cfg.projectileSpeed);
         bolt.mesh.position.copy(bolt.pos);
         bolt.mesh.visible = true;
@@ -1039,7 +1427,7 @@ export class WeaponSystem {
       return;
     }
 
-    // Hitscan pellets (BVH world + Zombie hitboxes)
+    // Hitscan pellets
     const spread = player.isAds ? cfg.spreadAds : cfg.spreadHip;
     const baseDamage =
       cfg.damage *
@@ -1054,11 +1442,11 @@ export class WeaponSystem {
     for (let p = 0; p < cfg.pellets; p++) {
       const sx = (Math.random() - 0.5) * spread * 2;
       const sy = (Math.random() - 0.5) * spread * 2;
-      const shotDir = this.tmpDir.clone();
-      shotDir.x += sx;
-      shotDir.y += sy;
-      shotDir.z += (Math.random() - 0.5) * spread * 0.5;
-      shotDir.normalize();
+      const shotDir = this.tmpDir
+        .clone()
+        .addScaledVector(this.tmpRight, sx)
+        .addScaledVector(this.tmpUp, sy)
+        .normalize();
 
       const worldHit = this.bvh.raycast(this.tmpOrigin, shotDir, 120);
       const maxZDist = worldHit ? worldHit.distance : 120;
@@ -1078,8 +1466,9 @@ export class WeaponSystem {
           instaKill,
         );
 
-        this.spawnParticles(zHit.point, 0x8b1111, 7, 2.8);
-        if (zHit.hitZone === 'head') anyHeadshot = true;
+        const isHeadHit = zHit.hitZone === 'head';
+        this.spawnParticles(zHit.point, isHeadHit ? 0xb91c1c : 0x8b1111, isHeadHit ? 14 : 7, isHeadHit ? 3.8 : 2.8);
+        if (isHeadHit) anyHeadshot = true;
 
         if (res.killed) {
           anyKill = true;
@@ -1154,14 +1543,18 @@ export class WeaponSystem {
   ): void {
     this.recoilOffsetZ = THREE.MathUtils.damp(this.recoilOffsetZ, 0, 18, dt);
     this.recoilOffsetPitch = THREE.MathUtils.damp(this.recoilOffsetPitch, 0, 18, dt);
+    this.recoilBloom = Math.max(0, this.recoilBloom - dt * 2.4);
+    this.slideKick = THREE.MathUtils.damp(this.slideKick, 0, 28, dt);
+    this.lookSwayX = THREE.MathUtils.damp(this.lookSwayX, 0, 11, dt);
+    this.lookSwayY = THREE.MathUtils.damp(this.lookSwayY, 0, 11, dt);
 
-    // Wall-clip prevention raycast (pushback if barrel touches a wall)
-    player.getEyePosition(this.tmpOrigin);
+    // Wall-clip prevention raycast
+    this.camera.getWorldPosition(this.tmpOrigin);
     this.camera.getWorldDirection(this.tmpDir);
     const wallCheck = this.bvh.raycast(this.tmpOrigin, this.tmpDir, 0.85);
     const wallPushback = wallCheck ? Math.max(0, 0.85 - wallCheck.distance) * 0.45 : 0;
 
-    // Perk drink animation
+    // Perk drink bottle uncork/gulp animation
     if (player.drinkAnimTimer > 0) {
       this.weaponPivot.visible = false;
       this.knifeGroup.visible = false;
@@ -1169,83 +1562,266 @@ export class WeaponSystem {
       this.bottleLiquidMat.color.setHex(player.drinkPerkColor);
       this.bottleLiquidMat.emissive.setHex(player.drinkPerkColor);
       const t = 1 - player.drinkAnimTimer / BALANCE.perks.drinkDuration;
+      const lift = Math.sin(t * Math.PI);
+      const gulpBounce = t > 0.35 && t < 0.72 ? Math.sin((t - 0.35) * 26) * 0.08 : 0;
       this.bottleGroup.position.set(
-        THREE.MathUtils.lerp(0.18, 0.0, Math.sin(t * Math.PI)),
-        THREE.MathUtils.lerp(-0.22, -0.05, Math.sin(t * Math.PI)),
+        THREE.MathUtils.lerp(0.18, 0.01, lift),
+        THREE.MathUtils.lerp(-0.24, -0.04, lift) + gulpBounce * 0.15,
         -0.34,
       );
-      this.bottleGroup.rotation.x = Math.sin(t * Math.PI) * 1.1;
+      this.bottleGroup.rotation.set(lift * 1.18 + gulpBounce, 0, lift * -0.22);
       return;
     }
 
     this.bottleGroup.visible = false;
 
-    // Melee knife animation
+    // Diagonal Bowie Knife Slash Animation
     if (player.knifeAnimTimer > 0) {
       this.weaponPivot.visible = false;
       this.knifeGroup.visible = true;
-      const t = 1 - player.knifeAnimTimer / 0.28;
+      const t = 1 - player.knifeAnimTimer / 0.3;
+      const swing = t < 0.55 ? t / 0.55 : 1 - (t - 0.55) / 0.45;
+      const eased = Math.sin(swing * Math.PI * 0.5);
       this.knifeGroup.position.set(
-        THREE.MathUtils.lerp(0.24, -0.18, t),
-        -0.14,
-        -0.38 - Math.sin(t * Math.PI) * 0.22,
+        THREE.MathUtils.lerp(0.26, -0.22, t),
+        THREE.MathUtils.lerp(-0.08, -0.17, t) + Math.sin(t * Math.PI) * 0.03,
+        -0.36 - eased * 0.24,
       );
-      this.knifeGroup.rotation.set(0.15, THREE.MathUtils.lerp(-0.4, 0.9, t), -0.4);
+      this.knifeGroup.rotation.set(
+        THREE.MathUtils.lerp(0.28, -0.22, t),
+        THREE.MathUtils.lerp(-0.55, 1.05, t),
+        THREE.MathUtils.lerp(-0.25, -0.92, t),
+      );
       return;
     }
 
     this.knifeGroup.visible = false;
     this.weaponPivot.visible = true;
 
-    const adsAlpha = player.isAds ? 1 : 0;
-    const targetX = THREE.MathUtils.lerp(0.21, 0.0, adsAlpha);
-    const targetY = THREE.MathUtils.lerp(-0.18, -0.115, adsAlpha);
-    const targetZ = THREE.MathUtils.lerp(-0.34, -0.26, adsAlpha) + this.recoilOffsetZ + wallPushback;
-
-    const moveAmt = Math.min(1, Math.hypot(player.velocity.x, player.velocity.z) / 5);
-    const swaySpeed = player.isSprinting ? 11 : 6;
-    const tNow = performance.now() * 0.001;
-    this.swayX = Math.cos(tNow * swaySpeed) * 0.009 * moveAmt * (1 - adsAlpha * 0.7);
-    this.swayY = Math.abs(Math.sin(tNow * swaySpeed)) * 0.008 * moveAmt * (1 - adsAlpha * 0.7);
-
-    const reloadFrac = this.isReloading ? this.reloadTimer / Math.max(0.1, this.reloadDuration) : 0;
-    const reloadTilt = this.isReloading ? Math.sin(reloadFrac * Math.PI) * 0.45 : 0;
-    const sprintTilt = player.isSprinting ? -0.35 : 0;
-    const swapDrop = this.swapTimer > 0 ? -(this.swapTimer / Math.max(0.1, cfg.swapTime)) * 0.16 : 0;
-
-    // Magazine drop-out and re-insert animation during reload
     const activeId = this.getActiveWeapon().id;
+    const adsAlpha = player.isAds ? 1 : 0;
+    const adsY = ADS_EYE_Y[cfg.id];
+    const targetX = THREE.MathUtils.lerp(0.195, 0.0, adsAlpha);
+    const targetY = THREE.MathUtils.lerp(-0.17, adsY, adsAlpha);
+    const targetZ = THREE.MathUtils.lerp(-0.335, -0.245, adsAlpha) + this.recoilOffsetZ + wallPushback;
+
+    const horizSpeed = Math.hypot(player.velocity.x, player.velocity.z);
+    const moveAmt = Math.min(1, horizSpeed / 5);
+    const tNow = performance.now() * 0.001;
+    const cadence = player.isSprinting ? 13.5 : 8.2;
+    this.bobPhase += dt * cadence * (0.25 + moveAmt * 0.75);
+
+    // Subtle idle breathing + crisp locomotion sway
+    const idleX = Math.sin(tNow * 1.4) * 0.0022 * (1 - adsAlpha * 0.8);
+    const idleY = Math.cos(tNow * 2.1) * 0.0022 * (1 - adsAlpha * 0.8);
+    const bobAmp = player.isSprinting ? 0.017 : 0.0085;
+    this.swayX =
+      Math.cos(this.bobPhase) * bobAmp * moveAmt * (1 - adsAlpha * 0.8) +
+      idleX +
+      this.lookSwayX * (1 - adsAlpha * 0.65);
+    this.swayY =
+      Math.abs(Math.sin(this.bobPhase)) * bobAmp * 0.85 * moveAmt * (1 - adsAlpha * 0.8) +
+      idleY +
+      this.lookSwayY * (1 - adsAlpha * 0.65);
+
+    // CoD-style Multi-stage Reload Choreography (Tilt -> Mag Drop -> Left Hand Slam -> Slide Rack)
+    const reloadFrac = this.isReloading ? this.reloadTimer / Math.max(0.1, this.reloadDuration) : 0;
+    let reloadTilt = 0;
+    let reloadBumpY = 0;
+    let rackPull = 0;
+    if (this.isReloading) {
+      reloadTilt = Math.sin(Math.min(1, reloadFrac * 1.15) * Math.PI);
+      if (reloadFrac > 0.56 && reloadFrac < 0.7) {
+        reloadBumpY = Math.sin(((reloadFrac - 0.56) / 0.14) * Math.PI) * 0.022;
+      }
+      if (reloadFrac > 0.74 && reloadFrac < 0.9) {
+        rackPull = Math.sin(((reloadFrac - 0.74) / 0.16) * Math.PI) * 0.055;
+      }
+    }
+
+    // Magazine drop & re-insert motion
     const magEntry = this.weaponMags.get(activeId);
     if (magEntry) {
-      const magDrop = this.isReloading ? Math.sin(reloadFrac * Math.PI) * 0.14 : 0;
+      let magDrop = 0;
+      if (this.isReloading) {
+        if (reloadFrac < 0.25) {
+          magDrop = (reloadFrac / 0.25) * 0.19;
+        } else if (reloadFrac < 0.45) {
+          magDrop = 0.19;
+        } else if (reloadFrac < 0.62) {
+          magDrop = (1 - (reloadFrac - 0.45) / 0.17) * 0.19;
+        }
+      }
       magEntry.mesh.position.y = magEntry.baseY - magDrop;
     }
 
+    // Shotgun pump cycle offset (tracks both wooden forend AND left hand!)
+    let pumpBack = 0;
+    if (activeId === 'hedgerow' && this.pumpTimer > 0) {
+      const pDur = Math.min(0.55, this.fireCooldown * 0.85);
+      const pFrac = 1 - this.pumpTimer / Math.max(0.05, pDur);
+      // Slight delay right after blast so recoil finishes, then sharp pump back-and-forward
+      if (pFrac > 0.18 && pFrac < 0.88) {
+        pumpBack = Math.sin(((pFrac - 0.18) / 0.7) * Math.PI) * 0.088;
+      }
+    }
+    const pumpObj = this.weaponPumps.get(activeId);
+    if (pumpObj) {
+      pumpObj.mesh.position.z = pumpObj.baseZ + pumpBack;
+    }
+
+    // Recoil blowback + reload rack on weapon slide / bolt carrier
+    const slideObj = this.weaponSlides.get(activeId);
+    if (slideObj) {
+      slideObj.mesh.position.z = slideObj.baseZ + this.slideKick + rackPull;
+    }
+
+    // Left Support Arm Animation (Pump follow-through, Mag Swap, Bolt Rack)
+    const leftRig = this.leftArms.get(activeId);
+    if (leftRig) {
+      if (this.isReloading) {
+        if (reloadFrac < 0.22) {
+          const u = reloadFrac / 0.22;
+          leftRig.group.position.lerpVectors(leftRig.restPos, leftRig.magPos, u);
+          leftRig.group.position.y -= u * 0.05;
+        } else if (reloadFrac < 0.44) {
+          const u = (reloadFrac - 0.22) / 0.22;
+          leftRig.group.position.copy(leftRig.magPos);
+          leftRig.group.position.y -= 0.16 * Math.sin(u * Math.PI * 0.5);
+        } else if (reloadFrac < 0.62) {
+          const u = (reloadFrac - 0.44) / 0.18;
+          leftRig.group.position.copy(leftRig.magPos);
+          leftRig.group.position.y -= (1 - u) * 0.16;
+        } else if (reloadFrac < 0.76) {
+          const u = (reloadFrac - 0.62) / 0.14;
+          leftRig.group.position.lerpVectors(leftRig.magPos, leftRig.rackPos, u);
+        } else if (reloadFrac < 0.9) {
+          const u = (reloadFrac - 0.76) / 0.14;
+          leftRig.group.position.copy(leftRig.rackPos);
+          leftRig.group.position.z += Math.sin(u * Math.PI) * 0.06;
+        } else {
+          const u = (reloadFrac - 0.9) / 0.1;
+          leftRig.group.position.lerpVectors(leftRig.rackPos, leftRig.restPos, u);
+        }
+      } else {
+        leftRig.group.position.copy(leftRig.restPos);
+        leftRig.group.position.z += pumpBack;
+      }
+    }
+
+    // Tactical Diagonal Sprint Carry vs Inspect Spin vs Ready Aim
+    const sprintFactor = player.isSprinting && !this.isReloading ? 1 : 0;
+    const sprintPosX = sprintFactor * -0.075;
+    const sprintPosY = sprintFactor * -0.05;
+    const sprintRotX = sprintFactor * -0.14;
+    const sprintRotY = sprintFactor * 0.62;
+    const sprintRotZ = sprintFactor * 0.34;
+
+    let inspectPosX = 0;
+    let inspectPosY = 0;
+    let inspectPosZ = 0;
+    let inspectRotX = 0;
+    let inspectRotY = 0;
+    let inspectRotZ = 0;
+    if (this.inspectTimer > 0) {
+      const inf = 1 - this.inspectTimer / this.inspectDuration;
+      const env = Math.sin(inf * Math.PI);
+      inspectPosX = -0.095 * env;
+      inspectPosY = 0.03 * env;
+      inspectPosZ = -0.03 * env;
+      inspectRotY = 0.78 * env;
+      inspectRotX = 0.22 * Math.sin(inf * Math.PI * 2);
+      inspectRotZ = -0.42 * env;
+    }
+
+    const swapDrop = this.swapTimer > 0 ? -(this.swapTimer / Math.max(0.1, cfg.swapTime)) * 0.18 : 0;
+
     this.weaponPivot.position.set(
-      THREE.MathUtils.damp(this.weaponPivot.position.x, targetX + this.swayX, 18, dt),
-      THREE.MathUtils.damp(this.weaponPivot.position.y, targetY - this.swayY + swapDrop - reloadTilt * 0.18, 18, dt),
-      THREE.MathUtils.damp(this.weaponPivot.position.z, targetZ, 18, dt),
+      THREE.MathUtils.damp(
+        this.weaponPivot.position.x,
+        targetX + this.swayX + sprintPosX + inspectPosX - reloadTilt * 0.04,
+        18,
+        dt,
+      ),
+      THREE.MathUtils.damp(
+        this.weaponPivot.position.y,
+        targetY - this.swayY + swapDrop + sprintPosY + inspectPosY - reloadTilt * 0.1 + reloadBumpY,
+        18,
+        dt,
+      ),
+      THREE.MathUtils.damp(
+        this.weaponPivot.position.z,
+        targetZ + inspectPosZ,
+        18,
+        dt,
+      ),
     );
     this.weaponPivot.rotation.set(
-      this.recoilOffsetPitch - reloadTilt * 0.6 + sprintTilt * 0.2,
-      sprintTilt * -0.8,
-      reloadTilt * 0.45,
+      this.recoilOffsetPitch - reloadTilt * 0.34 + sprintRotX + inspectRotX + this.lookSwayY * 2.2,
+      sprintRotY + inspectRotY - reloadTilt * 0.3 + this.lookSwayX * 2.8,
+      reloadTilt * 0.56 + sprintRotZ + inspectRotZ - this.lookSwayX * 3.5,
     );
 
     const mf = this.muzzleSprites.get(activeId);
     if (mf) {
       const mat = mf.material as THREE.SpriteMaterial;
-      mat.opacity = this.muzzleFlashTimer > 0 ? 0.95 : 0;
+      mat.opacity = this.muzzleFlashTimer > 0 ? 0.96 : 0;
       mat.rotation = Math.random() * Math.PI * 2;
+    }
+    const mc = this.muzzleCrosses.get(activeId);
+    if (mc) {
+      mc.visible = this.muzzleFlashTimer > 0;
+      if (mc.visible) {
+        mc.rotation.z = Math.random() * Math.PI;
+        const s = 0.8 + Math.random() * 0.5;
+        mc.scale.set(s, s, s);
+      }
     }
   }
 
-  private updateParticlesAndProjectiles(
-    dt: number,
-    instaKill: boolean,
-    callbacks: ShotCallbacks,
+  private spawnShellCasing(
+    origin: THREE.Vector3,
+    right: THREE.Vector3,
+    up: THREE.Vector3,
+    fwd: THREE.Vector3,
   ): void {
-    for (const p of this.particles) {
+    const p = this.shellPool.find((item) => !item.active);
+    if (!p) return;
+    p.active = true;
+    p.maxLife = 0.85;
+    p.life = p.maxLife;
+    const ejectSpeed = 2.0 + Math.random() * 0.8;
+    p.vx = right.x * ejectSpeed + fwd.x * 0.35 + (Math.random() - 0.5) * 0.4;
+    p.vy = up.y * (1.7 + Math.random() * 0.7) + 0.5;
+    p.vz = right.z * ejectSpeed + fwd.z * 0.35 + (Math.random() - 0.5) * 0.4;
+    p.rx = (Math.random() - 0.5) * 28;
+    p.ry = (Math.random() - 0.5) * 28;
+    p.rz = (Math.random() - 0.5) * 28;
+    p.mesh.position.copy(origin);
+    p.mesh.scale.setScalar(1);
+    p.mesh.visible = true;
+  }
+
+  private spawnSmokePuff(origin: THREE.Vector3, fwd: THREE.Vector3): void {
+    const p = this.smokePool.find((item) => !item.active);
+    if (!p) return;
+    p.active = true;
+    p.maxLife = 0.5;
+    p.life = p.maxLife;
+    p.vx = fwd.x * 0.65 + (Math.random() - 0.5) * 0.28;
+    p.vy = 0.45 + Math.random() * 0.35;
+    p.vz = fwd.z * 0.65 + (Math.random() - 0.5) * 0.28;
+    p.rx = 1.5;
+    p.ry = 1.2;
+    p.rz = 0.8;
+    p.mesh.position.copy(origin);
+    p.mesh.scale.setScalar(p.startScale);
+    (p.mesh.material as THREE.MeshBasicMaterial).opacity = p.baseOpacity;
+    p.mesh.visible = true;
+  }
+
+  private stepParticlePool(pool: ParticleItem[], dt: number): void {
+    for (const p of pool) {
       if (!p.active) continue;
       p.life -= dt;
       if (p.life <= 0) {
@@ -1257,14 +1833,39 @@ export class WeaponSystem {
       p.mesh.position.x += p.vx * dt;
       p.mesh.position.y += p.vy * dt;
       p.mesh.position.z += p.vz * dt;
-      if (p.mesh.position.y < 0.03) {
+      p.mesh.rotation.x += p.rx * dt;
+      p.mesh.rotation.y += p.ry * dt;
+      p.mesh.rotation.z += p.rz * dt;
+
+      if (p.bounce && p.mesh.position.y < 0.03) {
         p.mesh.position.y = 0.03;
-        p.vy = -p.vy * 0.35;
-        p.vx *= 0.65;
-        p.vz *= 0.65;
+        p.vy = -p.vy * 0.38;
+        p.vx *= 0.62;
+        p.vz *= 0.62;
+        p.rx *= 0.5;
+        p.rz *= 0.5;
       }
-      (p.mesh.material as THREE.MeshBasicMaterial).opacity = Math.max(0, p.life / p.maxLife);
+
+      const frac = 1 - p.life / p.maxLife;
+      if (p.startScale !== p.endScale) {
+        const s = THREE.MathUtils.lerp(p.startScale, p.endScale, frac);
+        p.mesh.scale.setScalar(s);
+      }
+      const mat = p.mesh.material as THREE.MeshBasicMaterial | THREE.MeshStandardMaterial;
+      if (mat.transparent) {
+        mat.opacity = Math.max(0, (1 - frac) * p.baseOpacity);
+      }
     }
+  }
+
+  private updateParticlesAndProjectiles(
+    dt: number,
+    instaKill: boolean,
+    callbacks: ShotCallbacks,
+  ): void {
+    this.stepParticlePool(this.particles, dt);
+    this.stepParticlePool(this.shellPool, dt);
+    this.stepParticlePool(this.smokePool, dt);
 
     for (const t of this.tracers) {
       if (!t.active) continue;
@@ -1298,8 +1899,9 @@ export class WeaponSystem {
       b.life -= dt;
       const stepDist = b.vel.length() * dt;
       const dir = this.tmpVec.copy(b.vel).normalize();
-      const zHit = this.zombies.raycastShot(b.pos, dir, stepDist + 0.35);
-      const wHit = this.bvh.raycast(b.pos, dir, stepDist + 0.25);
+      const sweepOrigin = this.tmpOrigin.copy(b.pos).addScaledVector(dir, -0.15);
+      const zHit = this.zombies.raycastShot(sweepOrigin, dir, stepDist + 0.5);
+      const wHit = this.bvh.raycast(sweepOrigin, dir, stepDist + 0.4);
 
       if (zHit || wHit || b.life <= 0) {
         const impactPos = zHit ? zHit.point : wHit ? wHit.point : b.pos;
@@ -1431,7 +2033,11 @@ export class WeaponSystem {
     p.vx = vx;
     p.vy = vy;
     p.vz = vz;
+    p.rx = (Math.random() - 0.5) * 14;
+    p.ry = (Math.random() - 0.5) * 14;
+    p.rz = (Math.random() - 0.5) * 14;
     p.mesh.position.copy(origin);
+    p.mesh.scale.setScalar(1);
     (p.mesh.material as THREE.MeshBasicMaterial).color.setHex(colorHex);
     (p.mesh.material as THREE.MeshBasicMaterial).opacity = 0.95;
     p.mesh.visible = true;

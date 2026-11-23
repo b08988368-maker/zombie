@@ -97,6 +97,7 @@ export interface HudSnapshot {
   loadProgress: number;
   loadLabel: string;
   pointerLocked: boolean;
+  pointerLockBlocked: boolean;
   health: number;
   maxHealth: number;
   isReviving: boolean;
@@ -111,10 +112,14 @@ export interface HudSnapshot {
   currentZoneLabel: string;
   weapons: WeaponSlotState[];
   activeSlot: number;
+  activeWeaponId: WeaponId;
   isReloading: boolean;
   reloadProgress: number;
   isAds: boolean;
   isSprinting: boolean;
+  crosshairSpread: number;
+  flashlightOn: boolean;
+  zombiesRemaining: number;
   grenades: number;
   maxGrenades: number;
   perks: PerkId[];
@@ -123,6 +128,7 @@ export interface HudSnapshot {
   pointDeltas: PointDelta[];
   hitMarkerType: 'none' | 'hit' | 'kill' | 'headshot';
   hitMarkerAlpha: number;
+  damageFlash: number;
   damageIndicatorAngle: number | null;
   damageIndicatorAlpha: number;
   radioMessage: string | null;

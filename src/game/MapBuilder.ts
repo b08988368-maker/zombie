@@ -324,8 +324,8 @@ export class MapBuilder {
 
     // Window 1 & 2
     windows.push(
-      this.createWindowBarricade('win_fh_west', 'farmhouse', -14, 14, 'x', -19.5, -12.0),
-      this.createWindowBarricade('win_fh_east', 'farmhouse', 0, 21, 'x', 5.5, -2.0),
+      this.createWindowBarricade('win_fh_west', 'farmhouse', -14, 14, 'x', -15.05, -12.85),
+      this.createWindowBarricade('win_fh_east', 'farmhouse', 0, 21, 'x', 1.05, -1.15),
     );
     spawnPoints.push(
       { id: 'sp_fh_w', zone: 'farmhouse', position: new THREE.Vector3(-20, 0, 14), windowId: 'win_fh_west' },
@@ -376,12 +376,18 @@ export class MapBuilder {
     noticeBoard.position.set(-11.4, 1.75, 10.36);
     this.scene.add(noticeBoard);
 
-    // Corner crates, table & chemical drums in Farmhouse
+    // Corner crates, Farmhouse table/chairs, breaker panel & chemical drums
     this.createBarrel(-12.5, 11.4);
     this.createBarrel(-1.5, 11.4);
     this.createWoodCrate(-12.2, 24.0, 1.1);
     this.createWoodCrate(-11.0, 24.1, 0.75);
+    this.createFarmhouseTable(-2.8, 22.5);
+    this.createBreakerPanel(-13.66, 1.65, 18.0);
     this.createFloorStain(-7, 13.2, 1.6);
+
+    // Exterior window lantern glow posts outside Farmhouse windows for depth through barricades
+    this.createExteriorWindowLantern(-16.2, 14.0);
+    this.createExteriorWindowLantern(2.2, 21.0);
 
     this.addStationSign(-7, 2.9, 25.6, 0, 'HOLLOWFIELD STATION', 'QUARTERS // SECTOR 01');
 
@@ -413,17 +419,18 @@ export class MapBuilder {
     this.createSilo(-17, 3.0);
     this.createSiloBridge(-17, -4.5, -17, 3.0);
 
-    // High-craft 1986 farm tractor + yard barrels, crates & utility poles with overhead cables
+    // High-craft 1986 farm tractor + yard barrels, sandbag cover, crates & utility poles
     this.createTractor(-1, 2.5);
     this.createBarrel(-13.5, 1.5);
     this.createBarrel(-13.2, 2.4);
     this.createWoodCrate(5.5, 4.2, 1.2);
     this.createWoodCrate(6.6, 4.5, 0.85);
+    this.createSandbagWall(-5.2, -3.4);
 
     // Sodium street lamp poles + sagging overhead power wires
     this.createLampPost(-11, 6, flickerLights, true);
-    this.createLampPost(7, -8, flickerLights, !this.isSoftwareGl);
-    this.createLampPost(9, 6, flickerLights, !this.isSoftwareGl);
+    this.createLampPost(7, -8, flickerLights, false);
+    this.createLampPost(9, 6, flickerLights, false);
     this.createOverheadCable(-11, 5.1, 6, 9, 5.1, 6);
     this.createOverheadCable(9, 5.1, 6, 7, 5.1, -8);
     this.createOverheadCable(7, 5.1, -8, 12.5, 3.7, -14);
@@ -493,12 +500,12 @@ export class MapBuilder {
     for (let rz = -3.6; rz <= 6.6; rz += 2.55) {
       this.addWallBox(22.35, 3.05, rz, 0.1, 0.85, 0.1, this.mats.timberBeam, 'wood', { navBlock: false });
     }
-    this.createWalkableRamp(25.5, 0, 10.0, 2.6, 2.5, 6.0);
+    this.createWalkableRamp(25.5, 0, 12.7, 2.6, 2.55, 6.0);
 
     windows.push(
-      this.createWindowBarricade('win_barn_s', 'barn', 20, 16, 'z', 22.0, 14.0),
-      this.createWindowBarricade('win_barn_e', 'barn', 30, 5, 'x', 36.0, 28.0),
-      this.createWindowBarricade('win_barn_n', 'barn', 21, -6, 'z', -12.0, -4.0),
+      this.createWindowBarricade('win_barn_s', 'barn', 20, 16, 'z', 17.05, 14.85),
+      this.createWindowBarricade('win_barn_e', 'barn', 30, 5, 'x', 31.05, 28.85),
+      this.createWindowBarricade('win_barn_n', 'barn', 21, -6, 'z', -7.05, -4.85),
     );
     spawnPoints.push(
       { id: 'sp_barn_s', zone: 'barn', position: new THREE.Vector3(20, 0, 23), windowId: 'win_barn_s' },
@@ -568,24 +575,17 @@ export class MapBuilder {
     this.createLabBench(7, -22, poweredEmissives);
 
     windows.push(
-      this.createWindowBarricade('win_lab_e', 'lab_wing', 14, -22, 'x', 20.0, 12.0),
+      this.createWindowBarricade('win_lab_e', 'lab_wing', 14, -22, 'x', 15.05, 12.85),
     );
     spawnPoints.push(
       { id: 'sp_lab_e', zone: 'lab_wing', position: new THREE.Vector3(21, 0, -22), windowId: 'win_lab_e' },
     );
 
-    // Lab fluorescent lights
-    const labLightA = new THREE.PointLight(0xa7f3d0, 2.4, 18, 1.5);
-    labLightA.position.set(-6, 3.7, -22);
+    // Lab fluorescent lights (1 primary dynamic light + dual emissive fixtures to stay within shader light budget)
+    const labLightA = new THREE.PointLight(0xa7f3d0, 2.8, 22, 1.4);
+    labLightA.position.set(0, 3.7, -22);
     this.scene.add(labLightA);
     poweredLights.push(labLightA);
-
-    const labLightB = new THREE.PointLight(0xa7f3d0, 2.4, 18, 1.5);
-    labLightB.position.set(6, 3.7, -22);
-    if (!this.isSoftwareGl) {
-      this.scene.add(labLightB);
-      poweredLights.push(labLightB);
-    }
 
     this.addStationSign(0, 3.1, -14.4, 0, 'BIO-CONTAINMENT LAB', 'BLOOM RESEARCH // B-04');
 
@@ -656,14 +656,8 @@ export class MapBuilder {
       { id: 'sp_bunk_e', zone: 'bunker', position: new THREE.Vector3(-4, 0, -36) },
     );
 
-    const bunkerLight = new THREE.PointLight(0xef4444, 1.8, 20, 1.5);
-    bunkerLight.position.set(-15, 3.4, -36);
-    if (!this.isSoftwareGl) {
-      this.scene.add(bunkerLight);
-    }
-
-    const bunkerMainLight = new THREE.PointLight(0xfde68a, 2.8, 24, 1.5);
-    bunkerMainLight.position.set(-21, 3.4, -36);
+    const bunkerMainLight = new THREE.PointLight(0xfde68a, 3.0, 26, 1.4);
+    bunkerMainLight.position.set(-15, 3.4, -36);
     this.scene.add(bunkerMainLight);
     poweredLights.push(bunkerMainLight);
 
@@ -704,6 +698,8 @@ export class MapBuilder {
     // =========================================================================
     // EASTER EGG FUSES (3 hidden components)
     // =========================================================================
+    // Steel relay pedestal in Bunker so fuse_bunker rests on geometry instead of floating
+    this.addWallBox(-11.5, 0.35, -40.3, 0.65, 0.7, 0.65, this.mats.brushedSteel, 'metal');
     fusePickups.push(
       this.createFusePickup('fuse_fh', 0, new THREE.Vector3(-7.0, 1.15, 18.0)),
       this.createFusePickup('fuse_barn', 1, new THREE.Vector3(23.5, 2.75, 2.0)),
@@ -800,13 +796,15 @@ export class MapBuilder {
     this.physics.addStaticBox({ cx: 43.5, cy: 3, cz: 0, hx: 0.5, hy: 3, hz: 45 });
 
     // Multi-tiered pine/dead trees surrounding the valley perimeter (46m .. 85m)
-    const trunkGeo = new THREE.CylinderGeometry(0.24, 0.42, 5.4, 7);
-    trunkGeo.translate(0, 2.7, 0);
-    const crownLowGeo = new THREE.ConeGeometry(2.7, 5.0, 7);
-    crownLowGeo.translate(0, 5.8, 0);
-    const crownTopGeo = new THREE.ConeGeometry(1.9, 4.6, 7);
-    crownTopGeo.translate(0, 8.6, 0);
-    const treeMat = new THREE.MeshStandardMaterial({ color: 0x18251a, roughness: 0.92 });
+    const trunkGeo = new THREE.CylinderGeometry(0.22, 0.44, 5.8, 7);
+    trunkGeo.translate(0, 2.9, 0);
+    const crownLowGeo = new THREE.ConeGeometry(2.9, 4.8, 8);
+    crownLowGeo.translate(0, 5.4, 0);
+    const crownMidGeo = new THREE.ConeGeometry(2.3, 4.4, 8);
+    crownMidGeo.translate(0, 7.6, 0);
+    const crownTopGeo = new THREE.ConeGeometry(1.5, 3.8, 8);
+    crownTopGeo.translate(0, 9.8, 0);
+    const treeMat = new THREE.MeshStandardMaterial({ color: 0x18261b, roughness: 0.92 });
 
     const treePositions: { x: number; z: number; s: number }[] = [];
     for (let i = 0; i < 110; i++) {
@@ -820,6 +818,7 @@ export class MapBuilder {
 
     const trunkInst = new THREE.InstancedMesh(trunkGeo, this.mats.timberBeam, treePositions.length);
     const crownLowInst = new THREE.InstancedMesh(crownLowGeo, treeMat, treePositions.length);
+    const crownMidInst = new THREE.InstancedMesh(crownMidGeo, treeMat, treePositions.length);
     const crownTopInst = new THREE.InstancedMesh(crownTopGeo, treeMat, treePositions.length);
     const dummy = new THREE.Object3D();
     const color = new THREE.Color();
@@ -830,15 +829,18 @@ export class MapBuilder {
       dummy.updateMatrix();
       trunkInst.setMatrixAt(idx, dummy.matrix);
       crownLowInst.setMatrixAt(idx, dummy.matrix);
+      crownMidInst.setMatrixAt(idx, dummy.matrix);
       crownTopInst.setMatrixAt(idx, dummy.matrix);
       color.setHSL(0.32 + (idx % 5) * 0.015, 0.24, 0.14 + (idx % 4) * 0.03);
       crownLowInst.setColorAt(idx, color);
+      crownMidInst.setColorAt(idx, color);
       crownTopInst.setColorAt(idx, color);
     });
     trunkInst.computeBoundingSphere();
     crownLowInst.computeBoundingSphere();
+    crownMidInst.computeBoundingSphere();
     crownTopInst.computeBoundingSphere();
-    this.scene.add(trunkInst, crownLowInst, crownTopInst);
+    this.scene.add(trunkInst, crownLowInst, crownMidInst, crownTopInst);
 
     // Subtle bioluminescent Bloom spore clusters outside Lab/Yard perimeter
     const sporeGeo = new THREE.DodecahedronGeometry(0.28, 0);
@@ -883,12 +885,21 @@ export class MapBuilder {
     group.position.copy(center);
     group.rotation.y = rotY;
 
+    const gateW = w >= d ? w : d;
+    const gateD = w >= d ? d : w;
     const panelGeo = new THREE.BoxGeometry(w, h, d);
-    this.tileBoxUvs(panelGeo, 0.5);
-    const panel = new THREE.Mesh(panelGeo, this.mats.warningStripe);
+    this.tileBoxUvs(panelGeo, 0.45);
+    const panel = new THREE.Mesh(panelGeo, this.mats.timberBeam);
     panel.castShadow = !this.isSoftwareGl;
     panel.receiveShadow = true;
     group.add(panel);
+
+    // Steel structural cross-ribs & subtle hazard footer kickplate (replaces flat hazard wall)
+    const kickGeo = new THREE.BoxGeometry(w + 0.04, 0.28, d + 0.04);
+    this.tileBoxUvs(kickGeo, 0.5);
+    const kickPlate = new THREE.Mesh(kickGeo, this.mats.warningStripe);
+    kickPlate.position.y = -h * 0.5 + 0.14;
+    group.add(kickPlate);
 
     const frameTop = new THREE.Mesh(
       new THREE.BoxGeometry(w + 0.22, 0.24, d + 0.18),
@@ -897,16 +908,33 @@ export class MapBuilder {
     frameTop.position.y = h * 0.5 - 0.1;
     group.add(frameTop);
 
+    // Side steel jamb uprights & diagonal iron brace
+    const sideOffset = gateW * 0.46;
+    for (const side of [-1, 1]) {
+      const upright = new THREE.Mesh(
+        new THREE.BoxGeometry(w >= d ? 0.16 : w + 0.1, h, w >= d ? d + 0.1 : 0.16),
+        this.mats.rustedMetal,
+      );
+      if (w >= d) upright.position.x = side * sideOffset;
+      else upright.position.z = side * sideOffset;
+      group.add(upright);
+    }
+
     // Horizontal steel locking bar & valve lock wheel
     const lockBar = new THREE.Mesh(
-      new THREE.BoxGeometry(w * 0.92, 0.16, d + 0.1),
+      new THREE.BoxGeometry(w >= d ? gateW * 0.94 : gateD + 0.12, 0.16, w >= d ? gateD + 0.12 : gateW * 0.94),
       this.mats.brushedSteel,
     );
     lockBar.position.y = -0.25;
     group.add(lockBar);
 
     const wheel = new THREE.Mesh(new THREE.TorusGeometry(0.2, 0.035, 8, 16), this.mats.rustedMetal);
-    wheel.position.set(w * 0.28, -0.25, d * 0.5 + 0.06);
+    if (w >= d) {
+      wheel.position.set(w * 0.28, -0.25, d * 0.5 + 0.07);
+    } else {
+      wheel.rotation.y = Math.PI / 2;
+      wheel.position.set(w * 0.5 + 0.07, -0.25, d * 0.28);
+    }
     group.add(wheel);
 
     const signMat = new THREE.MeshStandardMaterial({
@@ -914,12 +942,22 @@ export class MapBuilder {
       roughness: 0.7,
     });
     const signA = new THREE.Mesh(new THREE.PlaneGeometry(1.8, 0.65), signMat);
-    signA.position.set(0, 0.35, d * 0.5 + 0.02);
-    group.add(signA);
-    const signB = signA.clone();
-    signB.rotation.y = Math.PI;
-    signB.position.z = -d * 0.5 - 0.02;
-    group.add(signB);
+    if (w >= d) {
+      signA.position.set(0, 0.35, d * 0.5 + 0.02);
+      group.add(signA);
+      const signB = signA.clone();
+      signB.rotation.y = Math.PI;
+      signB.position.z = -d * 0.5 - 0.02;
+      group.add(signB);
+    } else {
+      signA.rotation.y = Math.PI / 2;
+      signA.position.set(w * 0.5 + 0.02, 0.35, 0);
+      group.add(signA);
+      const signB = signA.clone();
+      signB.rotation.y = -Math.PI / 2;
+      signB.position.x = -w * 0.5 - 0.02;
+      group.add(signB);
+    }
 
     this.scene.add(group);
 
@@ -1096,9 +1134,6 @@ export class MapBuilder {
 
     const light = new THREE.PointLight(cfg.color, 0.2, 8, 1.8);
     light.position.set(0, 1.85, 0.85);
-    if (!this.isSoftwareGl) {
-      group.add(light);
-    }
 
     this.scene.add(group);
 
@@ -1161,9 +1196,6 @@ export class MapBuilder {
 
     const light = new THREE.PointLight(0xfbbf24, active ? 1.8 : 0, 7, 1.7);
     light.position.set(0, 1.5, 0);
-    if (!this.isSoftwareGl) {
-      group.add(light);
-    }
 
     this.scene.add(group);
 
@@ -1469,26 +1501,38 @@ export class MapBuilder {
     glass.position.y = 1.9;
     group.add(glass);
 
-    // Sculpted fungal Bloom specimen inside containment vat
-    const bloomMat = new THREE.MeshStandardMaterial({
+    // Sculpted dark fibrous Bloom specimen + bioluminescent amber spore nodes inside containment vat
+    const stemMat = new THREE.MeshStandardMaterial({
+      color: 0x3b2618,
+      roughness: 0.88,
+      metalness: 0.08,
+    });
+    const sporeNodeMat = new THREE.MeshStandardMaterial({
       color: 0xd97706,
       emissive: 0xf59e0b,
-      emissiveIntensity: 1.15,
-      roughness: 0.45,
+      emissiveIntensity: 1.45,
+      roughness: 0.4,
     });
-    const stalk = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.26, 1.75, 10), bloomMat);
-    stalk.position.y = 1.5;
+    const stalk = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.28, 1.85, 9), stemMat);
+    stalk.position.y = 1.45;
     group.add(stalk);
 
-    const headCore = new THREE.Mesh(new THREE.DodecahedronGeometry(0.46, 1), bloomMat);
+    const headCore = new THREE.Mesh(new THREE.DodecahedronGeometry(0.42, 1), stemMat);
+    headCore.scale.set(1.15, 0.72, 1.15);
     headCore.position.y = 2.28;
     group.add(headCore);
 
-    for (let s = 0; s < 5; s++) {
-      const a = (s / 5) * Math.PI * 2;
-      const lobe = new THREE.Mesh(new THREE.SphereGeometry(0.22, 8, 8), bloomMat);
-      lobe.position.set(Math.cos(a) * 0.42, 1.85 + (s % 2) * 0.35, Math.sin(a) * 0.42);
-      group.add(lobe);
+    for (let s = 0; s < 6; s++) {
+      const a = (s / 6) * Math.PI * 2;
+      const tendril = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.075, 1.05, 6), stemMat);
+      tendril.position.set(Math.cos(a) * 0.28, 1.7 + (s % 2) * 0.2, Math.sin(a) * 0.28);
+      tendril.rotation.z = Math.cos(a) * -0.45;
+      tendril.rotation.x = Math.sin(a) * 0.45;
+      group.add(tendril);
+
+      const spore = new THREE.Mesh(new THREE.DodecahedronGeometry(0.11, 0), sporeNodeMat);
+      spore.position.set(Math.cos(a) * 0.46, 2.02 + (s % 2) * 0.24, Math.sin(a) * 0.46);
+      group.add(spore);
     }
 
     const cap = new THREE.Mesh(new THREE.CylinderGeometry(1.38, 1.38, 0.5, 18), this.mats.brushedSteel);
@@ -1580,6 +1624,7 @@ export class MapBuilder {
 
     this.createLightShaft(x, 5.1, z, 2.4, 5.0, 0xffb454, 0.068);
     this.physics.addStaticBox({ cx: x, cy: 2.5, cz: z, hx: 0.25, hy: 2.5, hz: 0.25 });
+    this.nav.addStaticObstacle({ minX: x - 0.3, maxX: x + 0.3, minZ: z - 0.3, maxZ: z + 0.3 });
   }
 
   private createLightShaft(
@@ -1723,9 +1768,6 @@ export class MapBuilder {
 
     const light = new THREE.PointLight(0x38bdf8, 0.2, 8, 1.6);
     light.position.set(0, 1.75, 0.6);
-    if (!this.isSoftwareGl) {
-      group.add(light);
-    }
 
     this.scene.add(group);
     this.physics.addStaticBox({ cx: pos.x, cy: 0.6, cz: pos.z, hx: 1.2, hy: 0.65, hz: 0.58 });
@@ -1788,12 +1830,11 @@ export class MapBuilder {
 
     const light = new THREE.PointLight(0x38bdf8, 0, 12, 1.6);
     light.position.set(cx, 2.2, cz);
-    if (!this.isSoftwareGl) {
-      this.scene.add(light);
-    }
 
     this.physics.addStaticBox({ cx: cx - 2.3, cy: 1.5, cz, hx: 0.28, hy: 1.6, hz: 0.28 });
     this.physics.addStaticBox({ cx: cx + 2.3, cy: 1.5, cz, hx: 0.28, hy: 1.6, hz: 0.28 });
+    this.nav.addStaticObstacle({ minX: cx - 2.6, maxX: cx - 2.0, minZ: cz - 0.3, maxZ: cz + 0.3 });
+    this.nav.addStaticObstacle({ minX: cx + 2.0, maxX: cx + 2.6, minZ: cz - 0.3, maxZ: cz + 0.3 });
 
     return {
       switchPos: new THREE.Vector3(cx + 2.55, 1.25, cz + 0.3),
@@ -1873,6 +1914,12 @@ export class MapBuilder {
 
     this.scene.add(group);
     this.physics.addStaticBox({ cx: pos.x, cy: 0.6, cz: pos.z, hx: 0.95, hy: 0.65, hz: 0.5 });
+    this.nav.addStaticObstacle({
+      minX: pos.x - 0.95,
+      maxX: pos.x + 0.95,
+      minZ: pos.z - 0.5,
+      maxZ: pos.z + 0.5,
+    });
     return { pos: pos.clone(), screenMat };
   }
 
@@ -1910,6 +1957,114 @@ export class MapBuilder {
     this.scene.add(cord, shade, bulb);
   }
 
+  private addContactShadow(x: number, y: number, z: number, radius: number): void {
+    const disc = new THREE.Mesh(
+      new THREE.PlaneGeometry(radius, radius),
+      new THREE.MeshBasicMaterial({
+        map: this.mats.contactShadowTex,
+        transparent: true,
+        opacity: 0.72,
+        depthWrite: false,
+        polygonOffset: true,
+        polygonOffsetFactor: -1,
+      }),
+    );
+    disc.rotation.x = -Math.PI / 2;
+    disc.position.set(x, y, z);
+    this.scene.add(disc);
+  }
+
+  private createFarmhouseTable(x: number, z: number): void {
+    // Rustic timber table with lantern & chairs
+    this.addWallBox(x, 0.76, z, 1.9, 0.09, 1.05, this.mats.barnWood, 'wood');
+    for (const lx of [-0.82, 0.82]) {
+      for (const lz of [-0.42, 0.42]) {
+        const leg = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.74, 0.09), this.mats.timberBeam);
+        leg.position.set(x + lx, 0.37, z + lz);
+        this.scene.add(leg);
+      }
+    }
+    this.addContactShadow(x, 0.065, z, 2.5);
+
+    // Table oil lantern + field radio logbook
+    const lanternBase = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.11, 0.13, 0.08, 10),
+      this.mats.rustedMetal,
+    );
+    lanternBase.position.set(x + 0.4, 0.84, z - 0.1);
+    const lanternGlow = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.07, 0.08, 0.16, 10),
+      new THREE.MeshStandardMaterial({
+        color: 0xfef3c7,
+        emissive: 0xf59e0b,
+        emissiveIntensity: 1.5,
+      }),
+    );
+    lanternGlow.position.set(x + 0.4, 0.96, z - 0.1);
+    const notebook = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.03, 0.4), this.mats.plasterWall);
+    notebook.position.set(x - 0.35, 0.82, z + 0.12);
+    notebook.rotation.y = 0.25;
+    this.scene.add(lanternBase, lanternGlow, notebook);
+
+    // Two tucked wooden chairs
+    for (const [cx, cz, rot] of [
+      [x - 0.55, z - 0.72, 0.15],
+      [x + 0.5, z + 0.72, Math.PI - 0.2],
+    ] as const) {
+      const chair = new THREE.Group();
+      chair.position.set(cx, 0.06, cz);
+      chair.rotation.y = rot;
+      const seat = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.06, 0.46), this.mats.barnWood);
+      seat.position.y = 0.44;
+      const back = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.52, 0.06), this.mats.timberBeam);
+      back.position.set(0, 0.72, -0.2);
+      chair.add(seat, back);
+      this.scene.add(chair);
+    }
+  }
+
+  private createBreakerPanel(x: number, y: number, z: number): void {
+    const cabinet = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.85, 0.62), this.mats.brushedSteel);
+    cabinet.position.set(x, y, z);
+    const conduit = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 2.2, 8), this.mats.rustedMetal);
+    conduit.position.set(x + 0.03, y + 1.4, z);
+    const statusLed = new THREE.Mesh(
+      new THREE.SphereGeometry(0.035, 8, 8),
+      new THREE.MeshBasicMaterial({ color: 0xef4444 }),
+    );
+    statusLed.position.set(x + 0.09, y + 0.24, z - 0.18);
+    this.scene.add(cabinet, conduit, statusLed);
+  }
+
+  private createExteriorWindowLantern(x: number, z: number): void {
+    // Low-cost atmospheric beacon + misty light pool outside Farmhouse windows
+    const post = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.08, 2.6, 8), this.mats.timberBeam);
+    post.position.set(x, 1.3, z);
+    const head = new THREE.Mesh(
+      new THREE.SphereGeometry(0.14, 8, 8),
+      new THREE.MeshBasicMaterial({ color: 0xfbbf24 }),
+    );
+    head.position.set(x, 2.65, z);
+    this.scene.add(post, head);
+    this.createLightShaft(x, 2.65, z, 2.1, 2.65, 0xf59e0b, 0.048);
+  }
+
+  private createSandbagWall(x: number, z: number): void {
+    const sandMat = new THREE.MeshStandardMaterial({ color: 0x6f6552, roughness: 0.94 });
+    for (let row = 0; row < 3; row++) {
+      for (let col = 0; col < 3 - (row === 2 ? 1 : 0); col++) {
+        const bag = new THREE.Mesh(new THREE.BoxGeometry(0.76, 0.24, 0.42), sandMat);
+        bag.position.set(x - 0.72 + col * 0.74 + (row % 2) * 0.36, 0.14 + row * 0.23, z);
+        bag.castShadow = !this.isSoftwareGl;
+        bag.receiveShadow = true;
+        this.scene.add(bag);
+      }
+    }
+    this.addContactShadow(x, 0.055, z, 2.8);
+    this.physics.addStaticBox({ cx: x, cy: 0.4, cz: z, hx: 1.2, hy: 0.45, hz: 0.35 });
+    this.nav.addStaticObstacle({ minX: x - 1.2, maxX: x + 1.2, minZ: z - 0.35, maxZ: z + 0.35 });
+  }
+
   private createBarrel(x: number, z: number): void {
     const g = new THREE.Group();
     g.position.set(x, 0, z);
@@ -1925,6 +2080,7 @@ export class MapBuilder {
     rimB.position.y = 0.32;
     g.add(body, rimA, rimB);
     this.scene.add(g);
+    this.addContactShadow(x, 0.065, z, 1.15);
     this.physics.addStaticBox({ cx: x, cy: 0.51, cz: z, hx: 0.38, hy: 0.51, hz: 0.38 });
     this.nav.addStaticObstacle({ minX: x - 0.38, maxX: x + 0.38, minZ: z - 0.38, maxZ: z + 0.38 });
   }
@@ -1937,6 +2093,7 @@ export class MapBuilder {
     box.castShadow = !this.isSoftwareGl;
     box.receiveShadow = true;
     this.scene.add(box);
+    this.addContactShadow(x, 0.065, z, size * 1.55);
     this.bvh.registerMesh(box, 'wood');
     this.physics.addStaticBox({ cx: x, cy: size * 0.5, cz: z, hx: size * 0.5, hy: size * 0.5, hz: size * 0.5 });
     this.nav.addStaticObstacle({ minX: x - size * 0.5, maxX: x + size * 0.5, minZ: z - size * 0.5, maxZ: z + size * 0.5 });

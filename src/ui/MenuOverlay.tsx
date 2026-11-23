@@ -452,6 +452,7 @@ export function MenuOverlay({
               <div>R — Reload · Q — Swap Weapon</div>
               <div>F — Buy / Door / Repair / Fuse</div>
               <div>V — Knife Melee · G — Frag Grenade</div>
+              <div>T — Flashlight · X — Inspect Weapon</div>
               <div>F3 — Perf Overlay · Esc — Pause</div>
             </div>
             <div className="border-t border-white/10 pt-3 space-y-1.5 text-[#9e988a]">

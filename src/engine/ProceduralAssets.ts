@@ -17,6 +17,7 @@ export interface PbrMaterialSet {
   gunMetal: THREE.MeshStandardMaterial;
   gunPolymer: THREE.MeshStandardMaterial;
   gunWood: THREE.MeshStandardMaterial;
+  gunBrass: THREE.MeshStandardMaterial;
   zombieSkins: THREE.MeshStandardMaterial[];
   zombieCloths: THREE.MeshStandardMaterial[];
   zombiePants: THREE.MeshStandardMaterial;
@@ -26,6 +27,7 @@ export interface PbrMaterialSet {
   bulletHoleTex: THREE.CanvasTexture;
   bloodSplatterTex: THREE.CanvasTexture;
   scorchDecalTex: THREE.CanvasTexture;
+  contactShadowTex: THREE.CanvasTexture;
 }
 
 function hash2d(x: number, y: number, seed: number): number {
@@ -130,6 +132,7 @@ function generateTextureSet(
   map.repeat.set(repeatX, repeatY);
   map.anisotropy = maxAniso;
   map.generateMipmaps = true;
+  map.magFilter = THREE.LinearFilter;
   map.minFilter = THREE.LinearMipmapLinearFilter;
   map.needsUpdate = true;
 
@@ -140,6 +143,7 @@ function generateTextureSet(
   normalMap.repeat.set(repeatX, repeatY);
   normalMap.anisotropy = maxAniso;
   normalMap.generateMipmaps = true;
+  normalMap.magFilter = THREE.LinearFilter;
   normalMap.minFilter = THREE.LinearMipmapLinearFilter;
   normalMap.needsUpdate = true;
 
@@ -150,6 +154,7 @@ function generateTextureSet(
   roughnessMap.repeat.set(repeatX, repeatY);
   roughnessMap.anisotropy = maxAniso;
   roughnessMap.generateMipmaps = true;
+  roughnessMap.magFilter = THREE.LinearFilter;
   roughnessMap.minFilter = THREE.LinearMipmapLinearFilter;
   roughnessMap.needsUpdate = true;
 
@@ -281,10 +286,13 @@ export function createSkyDomeTexture(): THREE.CanvasTexture {
   return tex;
 }
 
-export function createPbrMaterialSet(renderer: THREE.WebGLRenderer): PbrMaterialSet {
+export function createPbrMaterialSet(
+  renderer: THREE.WebGLRenderer,
+  isSoftwareGl = false,
+): PbrMaterialSet {
   const maxAniso = Math.min(8, renderer.capabilities.getMaxAnisotropy());
-  const texSize = 384;
-  const bioTexSize = 256;
+  const texSize = isSoftwareGl ? 256 : 512;
+  const bioTexSize = isSoftwareGl ? 192 : 256;
 
   // 1. Poured concrete slabs with cracks, expansion joints, and damp staining
   const conc = generateTextureSet(texSize, maxAniso, 1, 1, 2.4, (u, v) => {
@@ -451,27 +459,32 @@ export function createPbrMaterialSet(renderer: THREE.WebGLRenderer): PbrMaterial
     metalness: 0.02,
   });
 
-  // 8. Farmhouse aged peeling plaster with lath & damp
-  const pl = generateTextureSet(texSize, maxAniso, 1, 1, 2.2, (u, v) => {
-    const n = fbm(u * 8, v * 8, 91, 4);
-    const fine = valueNoise(u * 48, v * 48, 93);
-    const mold = fbm(u * 14, v * 14, 97, 3);
-    const peel = n < 0.28;
-    const damp = mold > 0.6 ? 0.72 : 1.0;
-    const r = (peel ? 88 : 138 + n * 28 + fine * 10) * damp;
-    const g = (peel ? 72 : 134 + n * 26 + fine * 10) * (damp + 0.03);
-    const b = (peel ? 56 : 116 + n * 22 + fine * 8) * damp;
-    return { r, g, b, h: (peel ? 0.15 : 0.65) + n * 0.25, rough: 0.89 };
+  // 8. Farmhouse aged tongue-and-groove / weathered plaster walls (smooth realistic patina)
+  const pl = generateTextureSet(texSize, maxAniso, 1, 1, 1.5, (u, v) => {
+    const seamU = (u * 4) % 1;
+    const panelEdge = seamU < 0.014 ? 0.86 : 1.0;
+    const n = fbm(u * 5, v * 5, 91, 4);
+    const grain = valueNoise(u * 44, v * 80, 93);
+    const damp = fbm(u * 2.5, v * 2.0, 97, 3);
+    const grime = 1.0 - Math.max(0, damp - 0.42) * 0.24;
+    const base = (122 + n * 22 + grain * 8) * panelEdge * grime;
+    return {
+      r: base * 1.02,
+      g: base * 0.97,
+      b: base * 0.87,
+      h: (panelEdge < 1 ? 0.34 : 0.62) + n * 0.16 + grain * 0.06,
+      rough: 0.86 + n * 0.1,
+    };
   });
   const plasterWall = new THREE.MeshStandardMaterial({
     map: pl.map,
     normalMap: pl.normalMap,
-    normalScale: new THREE.Vector2(0.75, 0.75),
+    normalScale: new THREE.Vector2(0.68, 0.68),
     roughnessMap: pl.roughnessMap,
-    roughness: 0.9,
+    roughness: 0.88,
     metalness: 0.02,
   });
-  applyMacroWorldVariation(plasterWall, 0.18);
+  applyMacroWorldVariation(plasterWall, 0.14);
 
   // 9. Lab Wing ceramic tiles with clean bevels & stained grout
   const lt = generateTextureSet(texSize, maxAniso, 1, 1, 2.5, (u, v) => {
@@ -548,23 +561,36 @@ export function createPbrMaterialSet(renderer: THREE.WebGLRenderer): PbrMaterial
   const gunMetal = new THREE.MeshStandardMaterial({
     map: bsteel.map,
     normalMap: bsteel.normalMap,
-    color: 0x5c646d,
-    roughness: 0.32,
-    metalness: 0.88,
+    normalScale: new THREE.Vector2(0.45, 0.45),
+    roughnessMap: bsteel.roughnessMap,
+    color: 0x4b535d,
+    roughness: 0.28,
+    metalness: 0.9,
+    envMapIntensity: 1.35,
   });
 
   const gunPolymer = new THREE.MeshStandardMaterial({
-    color: 0x1b1d20,
-    roughness: 0.66,
-    metalness: 0.14,
+    normalMap: bsteel.normalMap,
+    normalScale: new THREE.Vector2(0.25, 0.25),
+    color: 0x1a1c20,
+    roughness: 0.62,
+    metalness: 0.16,
   });
 
   const gunWood = new THREE.MeshStandardMaterial({
     map: wd.map,
     normalMap: wd.normalMap,
-    color: 0x8f5939,
-    roughness: 0.52,
+    normalScale: new THREE.Vector2(0.7, 0.7),
+    color: 0x8b5232,
+    roughness: 0.46,
     metalness: 0.06,
+  });
+
+  const gunBrass = new THREE.MeshStandardMaterial({
+    color: 0xd4a24c,
+    roughness: 0.24,
+    metalness: 0.92,
+    envMapIntensity: 1.4,
   });
 
   // 12. Procedural Infected Skin & Torn Cloth PBR materials (3 skin tones, 6 cloth outfits)
@@ -655,18 +681,31 @@ export function createPbrMaterialSet(renderer: THREE.WebGLRenderer): PbrMaterial
 
   const skyDomeTex = createSkyDomeTexture();
 
-  // Procedural muzzle flash sprite texture
+  // Procedural 4-ray star muzzle flash sprite texture
   const mfCanvas = document.createElement('canvas');
   mfCanvas.width = 128;
   mfCanvas.height = 128;
   const mfCtx = mfCanvas.getContext('2d')!;
-  const grad = mfCtx.createRadialGradient(64, 64, 2, 64, 64, 60);
-  grad.addColorStop(0, 'rgba(255,255,235,1)');
-  grad.addColorStop(0.28, 'rgba(255,195,90,0.9)');
-  grad.addColorStop(0.65, 'rgba(255,110,30,0.35)');
+  const grad = mfCtx.createRadialGradient(64, 64, 2, 64, 64, 58);
+  grad.addColorStop(0, 'rgba(255,255,245,1)');
+  grad.addColorStop(0.22, 'rgba(255,205,105,0.92)');
+  grad.addColorStop(0.55, 'rgba(255,115,35,0.32)');
   grad.addColorStop(1, 'rgba(255,60,0,0)');
   mfCtx.fillStyle = grad;
   mfCtx.fillRect(0, 0, 128, 128);
+  mfCtx.fillStyle = 'rgba(255,244,200,0.85)';
+  for (let r = 0; r < 6; r++) {
+    mfCtx.save();
+    mfCtx.translate(64, 64);
+    mfCtx.rotate((r * Math.PI) / 3);
+    mfCtx.beginPath();
+    mfCtx.moveTo(0, -6);
+    mfCtx.lineTo(54, 0);
+    mfCtx.lineTo(0, 6);
+    mfCtx.closePath();
+    mfCtx.fill();
+    mfCtx.restore();
+  }
   const muzzleFlashTex = new THREE.CanvasTexture(mfCanvas);
   muzzleFlashTex.colorSpace = THREE.SRGBColorSpace;
 
@@ -723,6 +762,20 @@ export function createPbrMaterialSet(renderer: THREE.WebGLRenderer): PbrMaterial
   const scorchDecalTex = new THREE.CanvasTexture(scCanvas);
   scorchDecalTex.colorSpace = THREE.SRGBColorSpace;
 
+  // Grounding contact shadow radial alpha texture
+  const csCanvas = document.createElement('canvas');
+  csCanvas.width = 128;
+  csCanvas.height = 128;
+  const csCtx = csCanvas.getContext('2d')!;
+  const csGrad = csCtx.createRadialGradient(64, 64, 6, 64, 64, 60);
+  csGrad.addColorStop(0, 'rgba(0,0,0,0.68)');
+  csGrad.addColorStop(0.5, 'rgba(0,0,0,0.32)');
+  csGrad.addColorStop(1, 'rgba(0,0,0,0)');
+  csCtx.fillStyle = csGrad;
+  csCtx.fillRect(0, 0, 128, 128);
+  const contactShadowTex = new THREE.CanvasTexture(csCanvas);
+  contactShadowTex.colorSpace = THREE.SRGBColorSpace;
+
   return {
     concrete,
     wetAsphalt,
@@ -739,6 +792,7 @@ export function createPbrMaterialSet(renderer: THREE.WebGLRenderer): PbrMaterial
     gunMetal,
     gunPolymer,
     gunWood,
+    gunBrass,
     zombieSkins,
     zombieCloths,
     zombiePants,
@@ -748,6 +802,7 @@ export function createPbrMaterialSet(renderer: THREE.WebGLRenderer): PbrMaterial
     bulletHoleTex,
     bloodSplatterTex,
     scorchDecalTex,
+    contactShadowTex,
   };
 }
 

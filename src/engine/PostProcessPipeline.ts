@@ -19,6 +19,7 @@ export class PostProcessPipeline {
   private readonly scene: THREE.Scene;
   private readonly camera: THREE.PerspectiveCamera;
   private readonly isSoftwareGl: boolean;
+  private readonly useComposer: boolean;
 
   private composer: EffectComposer | null = null;
   private bloomEffect: BloomEffect | null = null;
@@ -27,7 +28,9 @@ export class PostProcessPipeline {
   private hueSatEffect: HueSaturationEffect | null = null;
   private noiseEffect: NoiseEffect | null = null;
   private smaaEffect: SMAAEffect | null = null;
-  private effectPass: EffectPass | null = null;
+  private smaaPass: EffectPass | null = null;
+  private gradePass: EffectPass | null = null;
+  private chromaticPass: EffectPass | null = null;
 
   private quality: QualityPreset = 'high';
   private resolutionScale = 1.0;
@@ -42,68 +45,81 @@ export class PostProcessPipeline {
     this.scene = scene;
     this.camera = camera;
     this.isSoftwareGl = isSoftwareGl;
+    const forcePost =
+      typeof window !== 'undefined' && window.location.search.includes('forcePostProcess=1');
+    this.useComposer = !isSoftwareGl || forcePost;
     this.initComposer();
   }
 
   private initComposer(): void {
-    if (this.isSoftwareGl) {
+    if (!this.useComposer) {
       // Software WebGL renders directly to avoid multi-pass stalls while preserving exact scene/lighting
       return;
     }
 
-    const composer = new EffectComposer(this.renderer, {
-      frameBufferType: THREE.HalfFloatType,
-    });
-    composer.addPass(new RenderPass(this.scene, this.camera));
+    try {
+      const composer = new EffectComposer(this.renderer, {
+        frameBufferType: THREE.HalfFloatType,
+      });
+      composer.addPass(new RenderPass(this.scene, this.camera));
 
-    this.bloomEffect = new BloomEffect({
-      intensity: 0.72,
-      luminanceThreshold: 0.85,
-      luminanceSmoothing: 0.25,
-      mipmapBlur: true,
-    });
+      this.bloomEffect = new BloomEffect({
+        intensity: 0.72,
+        luminanceThreshold: 0.85,
+        luminanceSmoothing: 0.25,
+        mipmapBlur: true,
+      });
 
-    this.vignetteEffect = new VignetteEffect({
-      eskil: false,
-      offset: 0.26,
-      darkness: 0.58,
-    });
+      this.vignetteEffect = new VignetteEffect({
+        eskil: false,
+        offset: 0.26,
+        darkness: 0.58,
+      });
 
-    this.chromaticEffect = new ChromaticAberrationEffect({
-      offset: new THREE.Vector2(0, 0),
-      radialModulation: true,
-      modulationOffset: 0.2,
-    });
+      this.chromaticEffect = new ChromaticAberrationEffect({
+        offset: new THREE.Vector2(0, 0),
+        radialModulation: true,
+        modulationOffset: 0.2,
+      });
 
-    this.hueSatEffect = new HueSaturationEffect({
-      hue: 0,
-      saturation: 0,
-    });
+      this.hueSatEffect = new HueSaturationEffect({
+        hue: 0,
+        saturation: 0,
+      });
 
-    this.noiseEffect = new NoiseEffect({
-      premultiply: true,
-    });
-    this.noiseEffect.blendMode.opacity.value = 0.055;
+      this.noiseEffect = new NoiseEffect({
+        premultiply: true,
+      });
+      this.noiseEffect.blendMode.opacity.value = 0.055;
 
-    this.smaaEffect = new SMAAEffect();
+      this.smaaEffect = new SMAAEffect();
 
-    const toneMapping = new ToneMappingEffect({
-      mode: ToneMappingMode.ACES_FILMIC,
-    });
+      const toneMapping = new ToneMappingEffect({
+        mode: ToneMappingMode.ACES_FILMIC,
+      });
 
-    this.effectPass = new EffectPass(
-      this.camera,
-      this.smaaEffect,
-      this.bloomEffect,
-      this.chromaticEffect,
-      this.hueSatEffect,
-      this.vignetteEffect,
-      this.noiseEffect,
-      toneMapping,
-    );
+      // Convolution effects (SMAAEffect & ChromaticAberrationEffect) cannot share an EffectPass.
+      // Keep gradePass last and always enabled so the final pass always has renderToScreen = true.
+      this.smaaPass = new EffectPass(this.camera, this.smaaEffect);
+      this.chromaticPass = new EffectPass(this.camera, this.chromaticEffect);
+      this.chromaticPass.enabled = false;
+      this.gradePass = new EffectPass(
+        this.camera,
+        this.bloomEffect,
+        this.hueSatEffect,
+        this.vignetteEffect,
+        this.noiseEffect,
+        toneMapping,
+      );
 
-    composer.addPass(this.effectPass);
-    this.composer = composer;
+      composer.addPass(this.smaaPass);
+      composer.addPass(this.chromaticPass);
+      composer.addPass(this.gradePass);
+      this.composer = composer;
+    } catch (err) {
+      console.warn('PostProcessPipeline initialization failed, using direct render:', err);
+      this.composer = null;
+    }
   }
 
   public applyQuality(quality: QualityPreset, resolutionScale: number): void {
@@ -115,6 +131,9 @@ export class PostProcessPipeline {
       quality === 'low' ? 0.75 : quality === 'medium' ? 0.9 : 1.0;
     this.renderer.setPixelRatio(Math.max(0.5, baseRatio * resolutionScale * scaleFactor));
 
+    if (this.smaaPass) {
+      this.smaaPass.enabled = quality === 'high' || quality === 'ultra';
+    }
     if (this.bloomEffect) {
       this.bloomEffect.blendMode.opacity.value = quality === 'low' ? 0 : quality === 'medium' ? 0.45 : 0.75;
     }
@@ -125,9 +144,10 @@ export class PostProcessPipeline {
   }
 
   public setDamageAndHealthEffects(damageFlash: number, healthRatio: number): void {
-    if (this.chromaticEffect) {
+    if (this.chromaticEffect && this.chromaticPass) {
       const amt = damageFlash * 0.0045;
       this.chromaticEffect.offset.set(amt, amt * 0.65);
+      this.chromaticPass.enabled = damageFlash > 0.01;
     }
     if (this.hueSatEffect) {
       const lowHealth = healthRatio < 0.45 ? 1 - healthRatio / 0.45 : 0;
@@ -149,11 +169,16 @@ export class PostProcessPipeline {
   }
 
   public render(): void {
-    if (this.composer && this.quality !== 'low' && !this.isSoftwareGl) {
-      this.composer.render();
-    } else {
-      this.renderer.render(this.scene, this.camera);
+    if (this.composer && this.quality !== 'low' && this.useComposer) {
+      try {
+        this.composer.render();
+        return;
+      } catch (err) {
+        console.warn('PostProcessPipeline render failed, falling back to direct render:', err);
+        this.composer = null;
+      }
     }
+    this.renderer.render(this.scene, this.camera);
   }
 
   public dispose(): void {
