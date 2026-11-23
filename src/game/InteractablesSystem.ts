@@ -239,8 +239,9 @@ export class InteractablesSystem {
       pe.emissiveIntensity = 0.16;
     }
     for (const pm of this.map.perkMachines) {
-      pm.light.intensity = 0.2;
-      pm.emissiveMat.emissiveIntensity = 0.15;
+      const alwaysOn = pm.id === 'second_wind';
+      pm.light.intensity = alwaysOn ? 1.5 : 0.2;
+      pm.emissiveMat.emissiveIntensity = alwaysOn ? 1.4 : 0.15;
     }
   }
 
@@ -439,6 +440,7 @@ export class InteractablesSystem {
       y: number,
       z: number,
     ) => void,
+    onPowerUpCollect?: (id: PowerUpId, label: string, colorHex: string) => void,
   ): InteractPrompt | null {
     // Tick active power-up timers & cooldowns
     for (const [id, rem] of this.activePowerUps) {
@@ -470,6 +472,9 @@ export class InteractablesSystem {
         (dp.x - player.position.x) ** 2 + (dp.z - player.position.z) ** 2;
       if (distSq <= BALANCE.powerUps.pickupRadius ** 2) {
         this.collectPowerUp(dp.id, player, weapons, zombies, onEarnPoints, onRadioMessage, onKillEnemy);
+        const meta = POWERUP_META[dp.id];
+        const hex = `#${meta.color.toString(16).padStart(6, '0')}`;
+        onPowerUpCollect?.(dp.id, meta.label, hex);
         this.scene.remove(dp.mesh);
         this.droppedPowerUps.splice(i, 1);
       } else if (dp.life <= 0) {
@@ -633,9 +638,12 @@ export class InteractablesSystem {
         return prompt;
       }
 
+      const requiredHold = prompt.id.startsWith('window:')
+        ? BALANCE.economy.barricade.rebuildTime
+        : BALANCE.player.interactHoldTime;
       this.interactHoldTimer += dt;
-      prompt.progress = Math.min(1, this.interactHoldTimer / BALANCE.player.interactHoldTime);
-      if (this.interactHoldTimer >= BALANCE.player.interactHoldTime) {
+      prompt.progress = Math.min(1, this.interactHoldTimer / Math.max(0.01, requiredHold));
+      if (this.interactHoldTimer >= requiredHold) {
         this.interactHoldTimer = 0;
         this.executeInteraction(
           prompt.id,
@@ -825,14 +833,16 @@ export class InteractablesSystem {
         const cfg = BALANCE.perks.list[pm.id];
         const owned = this.perks.has(pm.id);
         const full = this.perks.size >= BALANCE.perks.maxPerks;
+        const needsPower = pm.id !== 'second_wind';
+        const powerMissing = needsPower && !this.powerOn;
         best = {
           id: `perk:${pm.id}`,
           title: cfg.name,
           subtitle: cfg.shortDesc,
           cost: owned ? null : cfg.price,
-          canAfford: !owned && !full && this.powerOn && points >= cfg.price,
+          canAfford: !owned && !full && !powerMissing && points >= cfg.price,
           progress: 0,
-          blockedReason: !this.powerOn
+          blockedReason: powerMissing
             ? 'Requires Station Power'
             : owned
               ? 'Already Equipped'
@@ -1097,7 +1107,7 @@ export class InteractablesSystem {
       this.overclockTimer = BALANCE.overclock.duration;
       this.overclockTargetSlot = weapons.activeSlot;
       this.audio.playBuy(true);
-      onRadioMessage('Overclock Bench cycling... Stand by (6s).');
+      onRadioMessage('Overclock Bench cycling... Stand by (3s).');
       return;
     }
 

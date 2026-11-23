@@ -277,30 +277,44 @@ export class AudioEngine {
       phase_cannon: { pitch: 300, bodyDur: 0.2, crackFreq: 1800, gain: 0.35 },
     };
     const p = profiles[weaponId];
-    const pitchMod = (upgraded ? 1.24 : 1.0) * (0.96 + Math.random() * 0.08);
+    const pitchMod = (upgraded ? 1.22 : 1.0) * (0.96 + Math.random() * 0.08);
 
-    // Layer 1: Low-end punch body
+    // Layer 1: Sub-bass chest thump (visceral recoil punch)
+    const sub = this.ctx.createOscillator();
+    const subGain = this.ctx.createGain();
+    sub.type = 'sine';
+    sub.frequency.setValueAtTime(88 * (upgraded ? 1.1 : 1), now);
+    sub.frequency.exponentialRampToValueAtTime(28, now + 0.095);
+    subGain.gain.setValueAtTime(p.gain * 0.85, now);
+    subGain.gain.exponentialRampToValueAtTime(0.001, now + 0.11);
+    sub.connect(subGain);
+    subGain.connect(this.sfxGain);
+    sub.start(now);
+    sub.stop(now + 0.12);
+
+    // Layer 2: Mid-low body punch
     const punch = this.ctx.createOscillator();
     const punchGain = this.ctx.createGain();
     punch.type = 'triangle';
     punch.frequency.setValueAtTime(p.pitch * pitchMod, now);
-    punch.frequency.exponentialRampToValueAtTime(34, now + 0.09);
-    punchGain.gain.setValueAtTime(p.gain, now);
-    punchGain.gain.exponentialRampToValueAtTime(0.001, now + 0.11);
+    punch.frequency.exponentialRampToValueAtTime(36, now + 0.085);
+    punchGain.gain.setValueAtTime(p.gain * 0.72, now);
+    punchGain.gain.exponentialRampToValueAtTime(0.001, now + 0.105);
     punch.connect(punchGain);
     punchGain.connect(this.sfxGain);
     punch.start(now);
-    punch.stop(now + 0.12);
+    punch.stop(now + 0.115);
 
-    // Layer 2: Noise blast crack
+    // Layer 3: Supersonic high-pass transient crack + chamber noise tail
     const noise = this.ctx.createBufferSource();
     noise.buffer = this.noiseBuffer;
     const bp = this.ctx.createBiquadFilter();
     bp.type = 'bandpass';
     bp.frequency.setValueAtTime(p.crackFreq * pitchMod, now);
-    bp.Q.value = 0.85;
+    bp.frequency.exponentialRampToValueAtTime(Math.max(420, p.crackFreq * 0.42), now + p.bodyDur);
+    bp.Q.value = 0.75;
     const nGain = this.ctx.createGain();
-    nGain.gain.setValueAtTime(p.gain * 0.9, now);
+    nGain.gain.setValueAtTime(p.gain * 1.05, now);
     nGain.gain.exponentialRampToValueAtTime(0.001, now + p.bodyDur);
     noise.connect(bp);
     bp.connect(nGain);
@@ -309,19 +323,33 @@ export class AudioEngine {
     noise.start(now);
     noise.stop(now + p.bodyDur + 0.02);
 
-    // Layer 3: Overclock harmonic sheen when upgraded
+    // Layer 4: Mechanical bolt / slide snap (+pump clack on shotgun/sniper)
+    const boltAt = now + (weaponId === 'hedgerow' || weaponId === 'longbow' ? 0.095 : 0.036);
+    const bolt = this.ctx.createOscillator();
+    const bGain = this.ctx.createGain();
+    bolt.type = 'triangle';
+    bolt.frequency.setValueAtTime(weaponId === 'hedgerow' ? 680 : 1220, boltAt);
+    bolt.frequency.exponentialRampToValueAtTime(340, boltAt + 0.035);
+    bGain.gain.setValueAtTime(0.09, boltAt);
+    bGain.gain.exponentialRampToValueAtTime(0.001, boltAt + 0.042);
+    bolt.connect(bGain);
+    bGain.connect(this.sfxGain);
+    bolt.start(boltAt);
+    bolt.stop(boltAt + 0.045);
+
+    // Layer 5: Overclock harmonic plasma sheen when upgraded
     if (upgraded) {
       const shimmer = this.ctx.createOscillator();
       const sGain = this.ctx.createGain();
       shimmer.type = 'sine';
-      shimmer.frequency.setValueAtTime(1420, now);
-      shimmer.frequency.exponentialRampToValueAtTime(420, now + 0.14);
-      sGain.gain.setValueAtTime(0.11, now);
-      sGain.gain.exponentialRampToValueAtTime(0.001, now + 0.15);
+      shimmer.frequency.setValueAtTime(1520, now);
+      shimmer.frequency.exponentialRampToValueAtTime(410, now + 0.15);
+      sGain.gain.setValueAtTime(0.12, now);
+      sGain.gain.exponentialRampToValueAtTime(0.001, now + 0.16);
       shimmer.connect(sGain);
       sGain.connect(this.sfxGain);
       shimmer.start(now);
-      shimmer.stop(now + 0.16);
+      shimmer.stop(now + 0.17);
     }
   }
 
@@ -393,20 +421,36 @@ export class AudioEngine {
     osc.stop(now + 0.08);
 
     if (headshot && this.noiseBuffer) {
-      const src = this.ctx.createBufferSource();
-      src.buffer = this.noiseBuffer;
-      const bp = this.ctx.createBiquadFilter();
-      bp.type = 'bandpass';
-      bp.frequency.setValueAtTime(2200, now);
-      bp.Q.value = 1.6;
-      const ng = this.ctx.createGain();
-      ng.gain.setValueAtTime(0.24, now);
-      ng.gain.exponentialRampToValueAtTime(0.001, now + 0.055);
-      src.connect(bp);
-      bp.connect(ng);
-      ng.connect(this.sfxGain);
-      src.start(now);
-      src.stop(now + 0.06);
+      // Wet skull crunch + crisp harmonic chime
+      const crunch = this.ctx.createBufferSource();
+      crunch.buffer = this.noiseBuffer;
+      const lowBp = this.ctx.createBiquadFilter();
+      lowBp.type = 'bandpass';
+      lowBp.frequency.setValueAtTime(440, now);
+      lowBp.Q.value = 1.4;
+      const cg = this.ctx.createGain();
+      cg.gain.setValueAtTime(0.32, now);
+      cg.gain.exponentialRampToValueAtTime(0.001, now + 0.085);
+      crunch.connect(lowBp);
+      lowBp.connect(cg);
+      cg.connect(this.sfxGain);
+      crunch.start(now);
+      crunch.stop(now + 0.09);
+
+      const snap = this.ctx.createBufferSource();
+      snap.buffer = this.noiseBuffer;
+      const highBp = this.ctx.createBiquadFilter();
+      highBp.type = 'bandpass';
+      highBp.frequency.setValueAtTime(2400, now);
+      highBp.Q.value = 1.7;
+      const sg = this.ctx.createGain();
+      sg.gain.setValueAtTime(0.24, now);
+      sg.gain.exponentialRampToValueAtTime(0.001, now + 0.055);
+      snap.connect(highBp);
+      highBp.connect(sg);
+      sg.connect(this.sfxGain);
+      snap.start(now);
+      snap.stop(now + 0.06);
     }
   }
 
@@ -544,28 +588,65 @@ export class AudioEngine {
 
   public playPerkJingle(perk: PerkId): void {
     if (!this.ctx) return;
+    const now = this.ctx.currentTime;
+
+    // Bottle-cap hiss + fizzy gulp before the jingle
+    if (this.noiseBuffer) {
+      const hiss = this.ctx.createBufferSource();
+      hiss.buffer = this.noiseBuffer;
+      const hp = this.ctx.createBiquadFilter();
+      hp.type = 'highpass';
+      hp.frequency.setValueAtTime(3200, now);
+      hp.frequency.exponentialRampToValueAtTime(1600, now + 0.09);
+      const hg = this.ctx.createGain();
+      hg.gain.setValueAtTime(0.18, now);
+      hg.gain.exponentialRampToValueAtTime(0.001, now + 0.095);
+      hiss.connect(hp);
+      hp.connect(hg);
+      hg.connect(this.sfxGain);
+      hiss.start(now);
+      hiss.stop(now + 0.1);
+    }
+    for (let b = 0; b < 2; b++) {
+      const bt = now + 0.09 + b * 0.09;
+      const gulp = this.ctx.createOscillator();
+      const gg = this.ctx.createGain();
+      gulp.type = 'triangle';
+      gulp.frequency.setValueAtTime(210 + b * 40, bt);
+      gulp.frequency.exponentialRampToValueAtTime(380 + b * 55, bt + 0.065);
+      gg.gain.setValueAtTime(0.15, bt);
+      gg.gain.exponentialRampToValueAtTime(0.001, bt + 0.075);
+      gulp.connect(gg);
+      gg.connect(this.sfxGain);
+      gulp.start(bt);
+      gulp.stop(bt + 0.08);
+    }
+
     const melodies: Record<PerkId, number[]> = {
-      ironhide: [261.6, 329.6, 392.0, 523.25],
-      second_wind: [392.0, 493.88, 587.33, 783.99],
-      quickhands: [329.6, 440.0, 554.37, 659.25],
-      twin_barrel: [293.66, 369.99, 440.0, 587.33],
-      marathon: [349.23, 440.0, 523.25, 698.46],
+      ironhide: [261.6, 329.6, 392.0, 523.25, 659.25],
+      second_wind: [392.0, 493.88, 587.33, 783.99, 987.77],
+      quickhands: [329.6, 440.0, 554.37, 659.25, 880.0],
+      twin_barrel: [293.66, 369.99, 440.0, 587.33, 739.99],
+      marathon: [349.23, 440.0, 523.25, 698.46, 880.0],
     };
     const notes = melodies[perk];
-    const now = this.ctx.currentTime;
     notes.forEach((freq, idx) => {
       if (!this.ctx) return;
-      const t = now + idx * 0.11;
-      const osc = this.ctx.createOscillator();
-      const g = this.ctx.createGain();
-      osc.type = 'triangle';
-      osc.frequency.setValueAtTime(freq, t);
-      g.gain.setValueAtTime(0.18, t);
-      g.gain.exponentialRampToValueAtTime(0.001, t + 0.24);
-      osc.connect(g);
-      g.connect(this.musicGain);
-      osc.start(t);
-      osc.stop(t + 0.25);
+      const t = now + 0.22 + idx * 0.1;
+      for (const detune of [-4, 4]) {
+        const osc = this.ctx.createOscillator();
+        const g = this.ctx.createGain();
+        osc.type = detune < 0 ? 'triangle' : 'sine';
+        osc.frequency.setValueAtTime(freq, t);
+        osc.detune.value = detune;
+        g.gain.setValueAtTime(0.11, t);
+        g.gain.exponentialRampToValueAtTime(0.001, t + 0.34);
+        osc.connect(g);
+        g.connect(this.musicGain);
+        g.connect(this.reverbNode);
+        osc.start(t);
+        osc.stop(t + 0.36);
+      }
     });
   }
 
@@ -592,44 +673,109 @@ export class AudioEngine {
   public playPowerUp(id: PowerUpId): void {
     if (!this.ctx) return;
     const now = this.ctx.currentTime;
-    const osc = this.ctx.createOscillator();
-    const g = this.ctx.createGain();
-    osc.type = id === 'nuke' ? 'sawtooth' : 'sine';
-    osc.frequency.setValueAtTime(id === 'nuke' ? 120 : 440, now);
-    osc.frequency.exponentialRampToValueAtTime(id === 'nuke' ? 35 : 880, now + 0.35);
-    g.gain.setValueAtTime(0.26, now);
-    g.gain.exponentialRampToValueAtTime(0.001, now + 0.4);
-    osc.connect(g);
-    g.connect(this.sfxGain);
-    osc.start(now);
-    osc.stop(now + 0.42);
+
+    if (id === 'nuke') {
+      const sub = this.ctx.createOscillator();
+      const sg = this.ctx.createGain();
+      sub.type = 'sawtooth';
+      sub.frequency.setValueAtTime(115, now);
+      sub.frequency.exponentialRampToValueAtTime(28, now + 0.55);
+      sg.gain.setValueAtTime(0.32, now);
+      sg.gain.exponentialRampToValueAtTime(0.001, now + 0.58);
+      sub.connect(sg);
+      sg.connect(this.sfxGain);
+      sub.start(now);
+      sub.stop(now + 0.6);
+      return;
+    }
+
+    const chordMap: Record<Exclude<PowerUpId, 'nuke'>, number[]> = {
+      max_ammo: [440, 554.37, 659.25, 880],
+      insta_kill: [329.63, 415.3, 493.88, 659.25],
+      double_points: [523.25, 659.25, 783.99, 1046.5],
+      carpenter: [392, 493.88, 587.33],
+      fire_sale: [587.33, 739.99, 880, 1174.66],
+    };
+
+    const notes = chordMap[id];
+    notes.forEach((freq, idx) => {
+      if (!this.ctx) return;
+      const t = now + idx * 0.055;
+      const osc = this.ctx.createOscillator();
+      const g = this.ctx.createGain();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(freq, t);
+      g.gain.setValueAtTime(0.2, t);
+      g.gain.exponentialRampToValueAtTime(0.001, t + 0.34);
+      osc.connect(g);
+      g.connect(this.sfxGain);
+      g.connect(this.reverbNode);
+      osc.start(t);
+      osc.stop(t + 0.36);
+    });
   }
 
   public playRoundStinger(kind: 'start' | 'end' | 'special' | 'brute'): void {
     if (!this.ctx) return;
     const now = this.ctx.currentTime;
+
+    // Deep sub-bass impact boom
+    const sub = this.ctx.createOscillator();
+    const sg = this.ctx.createGain();
+    sub.type = 'sine';
+    sub.frequency.setValueAtTime(kind === 'special' ? 72 : 58, now);
+    sub.frequency.exponentialRampToValueAtTime(26, now + 0.85);
+    sg.gain.setValueAtTime(0.28, now);
+    sg.gain.exponentialRampToValueAtTime(0.001, now + 0.9);
+    sub.connect(sg);
+    sg.connect(this.musicGain);
+    sub.start(now);
+    sub.stop(now + 0.95);
+
     const chord =
       kind === 'start'
-        ? [110, 130.8, 164.8]
+        ? [110, 130.81, 164.81, 207.65, 329.63] // Dark A minor / flat-sixth haunting motif
         : kind === 'end'
-          ? [146.8, 174.6, 220]
+          ? [146.83, 174.61, 220, 261.63, 349.23]
           : kind === 'special'
-            ? [98, 138.6, 185]
-            : [65.4, 82.4, 98];
+            ? [98, 138.59, 185, 233.08, 369.99] // Tritone feral hound howl chord
+            : [65.41, 82.41, 98, 123.47, 196];
 
     chord.forEach((freq, i) => {
       if (!this.ctx) return;
-      const t = now + i * 0.08;
-      const osc = this.ctx.createOscillator();
+      const t = now + i * 0.085;
+      const body = this.ctx.createOscillator();
+      const bell = this.ctx.createOscillator();
       const g = this.ctx.createGain();
-      osc.type = kind === 'brute' ? 'sawtooth' : 'triangle';
-      osc.frequency.setValueAtTime(freq, t);
-      g.gain.setValueAtTime(0.18, t);
-      g.gain.exponentialRampToValueAtTime(0.001, t + 1.1);
-      osc.connect(g);
+      const bg = this.ctx.createGain();
+
+      body.type = kind === 'brute' ? 'sawtooth' : 'triangle';
+      body.frequency.setValueAtTime(freq, t);
+      body.detune.value = i % 2 === 0 ? -5 : 5;
+
+      bell.type = 'sine';
+      bell.frequency.setValueAtTime(freq * 2, t);
+      bell.detune.value = 3;
+
+      g.gain.setValueAtTime(0.001, t);
+      g.gain.linearRampToValueAtTime(i === 0 ? 0.19 : 0.14, t + 0.03);
+      g.gain.exponentialRampToValueAtTime(0.001, t + 1.55);
+
+      bg.gain.setValueAtTime(0.001, t);
+      bg.gain.linearRampToValueAtTime(0.055, t + 0.02);
+      bg.gain.exponentialRampToValueAtTime(0.001, t + 1.15);
+
+      body.connect(g);
+      bell.connect(bg);
       g.connect(this.musicGain);
-      osc.start(t);
-      osc.stop(t + 1.15);
+      g.connect(this.reverbNode);
+      bg.connect(this.musicGain);
+      bg.connect(this.reverbNode);
+
+      body.start(t);
+      body.stop(t + 1.6);
+      bell.start(t);
+      bell.stop(t + 1.2);
     });
   }
 

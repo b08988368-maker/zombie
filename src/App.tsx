@@ -37,6 +37,7 @@ const INITIAL_SNAPSHOT: HudSnapshot = {
   maxGrenades: 4,
   perks: [],
   activePowerUps: [],
+  powerUpBanner: null,
   interactPrompt: null,
   pointDeltas: [],
   hitMarkerType: 'none',

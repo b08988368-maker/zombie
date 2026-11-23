@@ -156,35 +156,47 @@ export function MenuOverlay({
   }
 
   return (
-    <div className="fixed inset-0 z-30 flex items-center bg-gradient-to-r from-[#070908]/92 via-[#070908]/68 to-transparent px-8 sm:px-14">
-      <div className="w-full max-w-3xl flex flex-col gap-6 max-h-[90vh] overflow-y-auto pr-2">
+    <div className="fixed inset-0 z-30 flex items-center bg-gradient-to-r from-[#040605]/96 via-[#060807]/64 to-transparent px-8 sm:px-16">
+      <div className="w-full max-w-3xl flex flex-col gap-7 max-h-[90vh] overflow-y-auto pr-2">
         {/* Title Lockup */}
         <div>
-          <div className="text-xs tracking-[0.2em] uppercase text-amber-400/90 mb-1">
-            {snap.screen === 'paused'
-              ? 'Run Paused'
-              : '1986 · Agricultural Research Station'}
+          <div className="flex items-center gap-3 mb-2">
+            <span className="w-6 h-[2px] bg-red-600/90" />
+            <span className="text-[11px] font-mono-tabular tracking-[0.26em] uppercase text-amber-400/90">
+              {snap.screen === 'paused'
+                ? 'Run Paused // Tactical Pause'
+                : 'Sector B-04 // October 31, 1986'}
+            </span>
           </div>
-          <h1 className="font-display text-5xl sm:text-6xl font-bold tracking-[0.08em] uppercase text-[#ece9e2] leading-none">
+          <h1
+            className="font-display text-6xl sm:text-7xl font-bold tracking-[0.1em] uppercase text-[#ece9e2] leading-none"
+            style={{ textShadow: '0 4px 24px rgba(0,0,0,0.95), 0 0 28px rgba(185, 28, 28, 0.25)' }}
+          >
             HOLLOWFIELD
           </h1>
+          <div className="w-44 h-[2px] bg-gradient-to-r from-red-700/85 via-amber-500/45 to-transparent mt-2.5" />
           {snap.screen === 'menu' && best.bestRound > 0 && (
-            <div className="text-xs text-[#a39d8f] mt-2 font-mono-tabular">
-              Best Record: Round {best.bestRound} · {best.bestKills} Kills ·{' '}
-              {best.bestPoints.toLocaleString()} PTS
+            <div className="text-xs text-[#b5afa0] mt-3 font-mono-tabular flex items-center gap-2.5">
+              <span className="text-amber-400 uppercase tracking-wider">Best Survival</span>
+              <span className="text-white/25">/</span>
+              <span>Round {best.bestRound}</span>
+              <span className="text-white/25">/</span>
+              <span>{best.bestKills} Kills</span>
+              <span className="text-white/25">/</span>
+              <span>{best.bestPoints.toLocaleString()} PTS</span>
             </div>
           )}
         </div>
 
         {/* Navigation / Action Buttons */}
         {subTab === 'none' && (
-          <div className="flex flex-col items-start gap-2.5 max-w-xs">
+          <div className="flex flex-col items-start gap-2.5 max-w-[270px]">
             {snap.screen === 'menu' ? (
               <button
                 type="button"
                 data-testid="play-button"
                 onClick={onStartGame}
-                className="w-full text-left px-5 py-3 text-sm font-semibold uppercase tracking-wider bg-amber-500 text-[#090b0a] hover:bg-amber-400 transition-colors cursor-pointer"
+                className="w-full text-left px-5 py-3.5 text-sm font-bold uppercase tracking-[0.18em] bg-gradient-to-r from-amber-500 to-amber-600 text-[#090b0a] border-l-4 border-[#fef3c7] hover:from-amber-400 hover:to-amber-500 shadow-[0_4px_20px_rgba(245,158,11,0.28)] transition-all cursor-pointer"
               >
                 Start Survival
               </button>
@@ -193,14 +205,14 @@ export function MenuOverlay({
                 <button
                   type="button"
                   onClick={onResumeGame}
-                  className="w-full text-left px-5 py-3 text-sm font-semibold uppercase tracking-wider bg-amber-500 text-[#090b0a] hover:bg-amber-400 transition-colors cursor-pointer"
+                  className="w-full text-left px-5 py-3.5 text-sm font-bold uppercase tracking-[0.18em] bg-gradient-to-r from-amber-500 to-amber-600 text-[#090b0a] border-l-4 border-[#fef3c7] hover:from-amber-400 hover:to-amber-500 transition-all cursor-pointer"
                 >
                   Resume
                 </button>
                 <button
                   type="button"
                   onClick={onRestartGame}
-                  className="w-full text-left px-5 py-2.5 text-sm font-medium bg-[#141816] text-[#ece9e2] border border-white/15 hover:bg-[#1e2421] transition-colors cursor-pointer"
+                  className="w-full text-left px-5 py-2.5 text-sm font-medium uppercase tracking-wider bg-[#0d100f]/80 text-[#ece9e2] border-l-2 border-white/25 hover:border-amber-400 hover:bg-[#171c1a]/90 transition-all cursor-pointer"
                 >
                   Restart Run
                 </button>
@@ -210,7 +222,7 @@ export function MenuOverlay({
             <button
               type="button"
               onClick={() => setSubTab('settings')}
-              className="w-full text-left px-5 py-2.5 text-sm font-medium bg-[#141816] text-[#ece9e2] border border-white/15 hover:bg-[#1e2421] transition-colors cursor-pointer"
+              className="w-full text-left px-5 py-2.5 text-sm font-medium uppercase tracking-wider bg-[#0d100f]/80 text-[#ece9e2] border-l-2 border-white/25 hover:border-amber-400 hover:bg-[#171c1a]/90 transition-all cursor-pointer"
             >
               Settings
             </button>
@@ -218,7 +230,7 @@ export function MenuOverlay({
             <button
               type="button"
               onClick={() => setSubTab('credits')}
-              className="w-full text-left px-5 py-2.5 text-sm font-medium bg-[#141816] text-[#ece9e2] border border-white/15 hover:bg-[#1e2421] transition-colors cursor-pointer"
+              className="w-full text-left px-5 py-2.5 text-sm font-medium uppercase tracking-wider bg-[#0d100f]/80 text-[#ece9e2] border-l-2 border-white/25 hover:border-amber-400 hover:bg-[#171c1a]/90 transition-all cursor-pointer"
             >
               Controls & Credits
             </button>
@@ -227,7 +239,7 @@ export function MenuOverlay({
               <button
                 type="button"
                 onClick={onReturnToMenu}
-                className="w-full text-left px-5 py-2.5 text-sm font-medium bg-[#141816] text-[#c4beaf] border border-white/10 hover:bg-[#1e2421] transition-colors cursor-pointer"
+                className="w-full text-left px-5 py-2.5 text-sm font-medium uppercase tracking-wider bg-[#0d100f]/75 text-[#b5afa0] border-l-2 border-red-600/60 hover:border-red-500 hover:bg-[#1a1212]/90 hover:text-white transition-all cursor-pointer"
               >
                 Quit to Menu
               </button>
@@ -344,6 +356,34 @@ export function MenuOverlay({
                     onUpdateSettings({ ...settings, headBob: e.target.checked })
                   }
                 />
+              </label>
+
+              <label className="flex items-center justify-between bg-[#141816] border border-white/10 px-3 py-2">
+                <span className="text-[#ece9e2]">ADS Aim Assist</span>
+                <input
+                  type="checkbox"
+                  checked={settings.aimAssist}
+                  onChange={(e) =>
+                    onUpdateSettings({ ...settings, aimAssist: e.target.checked })
+                  }
+                />
+              </label>
+
+              <label className="flex flex-col gap-1.5">
+                <span className="text-[#a39d8f]">Sprint Input Mode</span>
+                <select
+                  value={settings.sprintMode}
+                  onChange={(e) =>
+                    onUpdateSettings({
+                      ...settings,
+                      sprintMode: e.target.value as 'hold' | 'toggle',
+                    })
+                  }
+                  className="bg-[#161a18] border border-white/15 px-3 py-2 text-[#ece9e2]"
+                >
+                  <option value="hold">Hold Key to Sprint</option>
+                  <option value="toggle">Press to Toggle Sprint</option>
+                </select>
               </label>
 
               <label className="flex flex-col gap-1.5">

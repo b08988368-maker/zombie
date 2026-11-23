@@ -396,6 +396,11 @@ export class MapBuilder {
       this.createWallBuy('hedgerow', new THREE.Vector3(-0.36, 1.55, 15.0), -Math.PI / 2),
     );
 
+    // Perk Machine: Second Wind (Quick Revive in Farmhouse spawn, usable without power)
+    perkMachines.push(
+      this.createPerkMachine('second_wind', new THREE.Vector3(-13.0, 0, 20.8), Math.PI * 0.5),
+    );
+
     // Door 1: Farmhouse to Yard (750)
     doors.push(
       this.createDoor(
@@ -664,9 +669,8 @@ export class MapBuilder {
     // Overclock Bench at (-15, 0, -40.3)
     const overclock = this.createOverclockBench(new THREE.Vector3(-15, 0, -40.3));
 
-    // Remaining 3 Perk Machines in Bunker
+    // Remaining 2 Perk Machines in Bunker
     perkMachines.push(
-      this.createPerkMachine('second_wind', new THREE.Vector3(-26.3, 0, -32.2), Math.PI * 0.5),
       this.createPerkMachine('twin_barrel', new THREE.Vector3(-26.3, 0, -39.8), Math.PI * 0.5),
       this.createPerkMachine('marathon', new THREE.Vector3(-3.7, 0, -39.8), -Math.PI * 0.5),
     );
@@ -1119,10 +1123,30 @@ export class MapBuilder {
     marquee.position.set(0, 1.82, 0.44);
     group.add(marquee);
 
-    // Bottle dispenser slot + signage
-    const dispWindow = new THREE.Mesh(new THREE.BoxGeometry(0.75, 0.35, 0.1), this.mats.darkTrim);
-    dispWindow.position.set(0, 0.62, 0.43);
+    // Dispenser window with illuminated perk bottles + signage
+    const dispWindow = new THREE.Mesh(new THREE.BoxGeometry(0.78, 0.42, 0.12), this.mats.darkTrim);
+    dispWindow.position.set(0, 0.64, 0.43);
     group.add(dispWindow);
+
+    const bottleMat = new THREE.MeshStandardMaterial({
+      color: cfg.color,
+      emissive: new THREE.Color(cfg.color),
+      emissiveIntensity: 0.75,
+      roughness: 0.15,
+      metalness: 0.1,
+    });
+    for (let bi = -1; bi <= 1; bi++) {
+      const bottle = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.065, 0.24, 8), bottleMat);
+      bottle.position.set(bi * 0.2, 0.62, 0.47);
+      const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.045, 0.08, 8), bottleMat);
+      neck.position.set(bi * 0.2, 0.76, 0.47);
+      group.add(bottle, neck);
+    }
+
+    // Glowing roof beacon cap
+    const topper = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.24, 0.18, 12), emissiveMat);
+    topper.position.y = 2.44;
+    group.add(topper);
 
     const signMat = new THREE.MeshStandardMaterial({
       map: createSignageTexture(cfg.name.toUpperCase(), `${cfg.price} PTS`, '#141716'),
@@ -1196,6 +1220,21 @@ export class MapBuilder {
 
     const light = new THREE.PointLight(0xfbbf24, active ? 1.8 : 0, 7, 1.7);
     light.position.set(0, 1.5, 0);
+
+    // Mystery Box sky-beam visible over active crate from anywhere in the station
+    const skyBeam = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.2, 0.62, 42, 12, 1, true),
+      new THREE.MeshBasicMaterial({
+        color: 0xfbbf24,
+        transparent: true,
+        opacity: 0.22,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+      }),
+    );
+    skyBeam.position.set(0, 21.5, 0);
+    group.add(skyBeam);
 
     this.scene.add(group);
 

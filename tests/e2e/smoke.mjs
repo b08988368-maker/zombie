@@ -419,6 +419,30 @@ async function run() {
   await page.waitForTimeout(1600);
   console.log('[E2E] Ironhide Tonic perk purchase verified.');
 
+  // Unlock Bunker Bulkhead & Barn Doors so all map zones are connected for zombie pathfinding
+  await page.evaluate(() => {
+    window.__HOLLOWFIELD_DEBUG__.setPlayerPose(-6.0, 0.9, -28.6, 0, 0);
+  });
+  await page.keyboard.down('KeyF');
+  await page.waitForFunction(
+    () => window.__HOLLOWFIELD_DEBUG__.getState().stats.doorsOpened >= 3,
+    null,
+    { timeout: 20000 },
+  );
+  await page.keyboard.up('KeyF');
+
+  await page.evaluate(() => {
+    window.__HOLLOWFIELD_DEBUG__.setPlayerPose(10.6, 0.9, 2.0, -Math.PI * 0.5, 0);
+  });
+  await page.keyboard.down('KeyF');
+  await page.waitForFunction(
+    () => window.__HOLLOWFIELD_DEBUG__.getState().stats.doorsOpened >= 4,
+    null,
+    { timeout: 20000 },
+  );
+  await page.keyboard.up('KeyF');
+  console.log('[E2E] Bunker Bulkhead and Barn Doors unlocked.');
+
   // 7b. Verify Barn hayloft ramp is physically climbable up onto the loft (fuse_barn reachable)
   await page.evaluate(() => {
     window.__HOLLOWFIELD_DEBUG__.setPlayerPose(25.5, 0.9, 13.8, 0, 0);

@@ -17,6 +17,8 @@ export const DEFAULT_SETTINGS: GameSettings = {
   fov: BALANCE.player.defaultFov,
   sensitivity: 1.0,
   headBob: true,
+  sprintMode: 'hold',
+  aimAssist: true,
   masterVolume: 0.85,
   musicVolume: 0.65,
   sfxVolume: 0.9,

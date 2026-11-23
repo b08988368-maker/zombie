@@ -64,16 +64,16 @@ export class PostProcessPipeline {
       composer.addPass(new RenderPass(this.scene, this.camera));
 
       this.bloomEffect = new BloomEffect({
-        intensity: 0.72,
-        luminanceThreshold: 0.85,
-        luminanceSmoothing: 0.25,
+        intensity: 0.85,
+        luminanceThreshold: 0.78,
+        luminanceSmoothing: 0.28,
         mipmapBlur: true,
       });
 
       this.vignetteEffect = new VignetteEffect({
         eskil: false,
-        offset: 0.26,
-        darkness: 0.58,
+        offset: 0.24,
+        darkness: 0.62,
       });
 
       this.chromaticEffect = new ChromaticAberrationEffect({
@@ -126,7 +126,11 @@ export class PostProcessPipeline {
     this.quality = quality;
     this.resolutionScale = resolutionScale;
 
-    const baseRatio = this.isSoftwareGl ? 0.5 : Math.min(window.devicePixelRatio, 2);
+    const baseRatio = this.isSoftwareGl
+      ? this.useComposer
+        ? 0.5
+        : 0.65
+      : Math.min(window.devicePixelRatio, 2);
     const scaleFactor =
       quality === 'low' ? 0.75 : quality === 'medium' ? 0.9 : 1.0;
     this.renderer.setPixelRatio(Math.max(0.5, baseRatio * resolutionScale * scaleFactor));

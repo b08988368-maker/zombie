@@ -28,6 +28,7 @@ export interface PbrMaterialSet {
   bloodSplatterTex: THREE.CanvasTexture;
   scorchDecalTex: THREE.CanvasTexture;
   contactShadowTex: THREE.CanvasTexture;
+  eyeGlowTex: THREE.CanvasTexture;
 }
 
 function hash2d(x: number, y: number, seed: number): number {
@@ -206,14 +207,14 @@ export function createSkyDomeTexture(): THREE.CanvasTexture {
   canvas.height = h;
   const ctx = canvas.getContext('2d')!;
 
-  // Cold night sky gradient matching scene.fog (#070a09) at the horizon
+  // Deep horror night sky gradient matching dark scene.fog (#050807) at horizon
   const skyGrad = ctx.createLinearGradient(0, 0, 0, h);
-  skyGrad.addColorStop(0.0, '#040810');
-  skyGrad.addColorStop(0.28, '#09131c');
-  skyGrad.addColorStop(0.46, '#0d191e');
-  skyGrad.addColorStop(0.54, '#09100f');
-  skyGrad.addColorStop(0.66, '#070a09');
-  skyGrad.addColorStop(1.0, '#070a09');
+  skyGrad.addColorStop(0.0, '#020409');
+  skyGrad.addColorStop(0.28, '#060c13');
+  skyGrad.addColorStop(0.46, '#091216');
+  skyGrad.addColorStop(0.54, '#060b0a');
+  skyGrad.addColorStop(0.66, '#050807');
+  skyGrad.addColorStop(1.0, '#050807');
   ctx.fillStyle = skyGrad;
   ctx.fillRect(0, 0, w, h);
 
@@ -459,77 +460,78 @@ export function createPbrMaterialSet(
     metalness: 0.02,
   });
 
-  // 8. Farmhouse aged tongue-and-groove / weathered plaster walls (smooth realistic patina)
-  const pl = generateTextureSet(texSize, maxAniso, 1, 1, 1.5, (u, v) => {
+  // 8. Farmhouse aged tongue-and-groove / weathered plaster walls (moody stained horror patina)
+  const pl = generateTextureSet(texSize, maxAniso, 1, 1, 1.8, (u, v) => {
     const seamU = (u * 4) % 1;
-    const panelEdge = seamU < 0.014 ? 0.86 : 1.0;
+    const panelEdge = seamU < 0.016 ? 0.78 : 1.0;
     const n = fbm(u * 5, v * 5, 91, 4);
     const grain = valueNoise(u * 44, v * 80, 93);
     const damp = fbm(u * 2.5, v * 2.0, 97, 3);
-    const grime = 1.0 - Math.max(0, damp - 0.42) * 0.24;
-    const base = (122 + n * 22 + grain * 8) * panelEdge * grime;
+    const streak = fbm(u * 14, v * 2.2, 99, 3);
+    const grime = 1.0 - Math.max(0, damp - 0.34) * 0.38 - Math.max(0, streak - 0.56) * 0.25;
+    const base = (78 + n * 22 + grain * 8) * panelEdge * grime;
     return {
-      r: base * 1.02,
-      g: base * 0.97,
-      b: base * 0.87,
-      h: (panelEdge < 1 ? 0.34 : 0.62) + n * 0.16 + grain * 0.06,
-      rough: 0.86 + n * 0.1,
+      r: base * 1.01,
+      g: base * 0.94,
+      b: base * 0.82,
+      h: (panelEdge < 1 ? 0.32 : 0.62) + n * 0.18 + grain * 0.08,
+      rough: 0.88 + n * 0.1,
     };
   });
   const plasterWall = new THREE.MeshStandardMaterial({
     map: pl.map,
     normalMap: pl.normalMap,
-    normalScale: new THREE.Vector2(0.68, 0.68),
+    normalScale: new THREE.Vector2(0.8, 0.8),
     roughnessMap: pl.roughnessMap,
-    roughness: 0.88,
+    roughness: 0.9,
     metalness: 0.02,
   });
-  applyMacroWorldVariation(plasterWall, 0.14);
+  applyMacroWorldVariation(plasterWall, 0.15);
 
-  // 9. Lab Wing ceramic tiles with clean bevels & stained grout
+  // 9. Lab Wing ceramic tiles with worn bevels & stained dark grout
   const lt = generateTextureSet(texSize, maxAniso, 1, 1, 2.5, (u, v) => {
     const gx = (u * 4) % 1;
     const gy = (v * 4) % 1;
-    const grout = gx < 0.045 || gy < 0.045;
+    const grout = gx < 0.048 || gy < 0.048;
     const grime = fbm(u * 10, v * 10, 113, 3);
     if (grout) {
-      return { r: 52, g: 58, b: 56, h: 0.08, rough: 0.92 };
+      return { r: 34, g: 40, b: 38, h: 0.06, rough: 0.94 };
     }
-    const bevel = Math.min(gx, 1 - gx, gy, 1 - gy) < 0.09 ? 0.94 : 1.0;
-    const base = (156 + grime * 26) * bevel;
+    const bevel = Math.min(gx, 1 - gx, gy, 1 - gy) < 0.09 ? 0.9 : 1.0;
+    const base = (118 + grime * 26) * bevel;
     return {
-      r: base * 0.9,
-      g: base * 0.98,
-      b: base * 0.93,
-      h: (bevel < 1 ? 0.55 : 0.78) + grime * 0.08,
-      rough: 0.24 + grime * 0.22,
+      r: base * 0.88,
+      g: base * 0.97,
+      b: base * 0.91,
+      h: (bevel < 1 ? 0.52 : 0.78) + grime * 0.08,
+      rough: 0.26 + grime * 0.26,
     };
   });
   const labTile = new THREE.MeshStandardMaterial({
     map: lt.map,
     normalMap: lt.normalMap,
-    normalScale: new THREE.Vector2(0.85, 0.85),
+    normalScale: new THREE.Vector2(0.9, 0.9),
     roughnessMap: lt.roughnessMap,
-    roughness: 0.4,
+    roughness: 0.42,
     metalness: 0.08,
   });
 
-  // 10. Valley soil / damp moss & grass
-  const sl = generateTextureSet(texSize, maxAniso, 1, 1, 2.6, (u, v) => {
+  // 10. Valley dark loamy soil / damp moss & midnight grass
+  const sl = generateTextureSet(texSize, maxAniso, 1, 1, 2.8, (u, v) => {
     const n = fbm(u * 12, v * 12, 131, 4);
     const grass = fbm(u * 28, v * 28, 139, 3);
     const pebbles = valueNoise(u * 64, v * 64, 143);
-    const r = 38 + n * 24 + grass * 12 + pebbles * 6;
-    const g = 44 + n * 26 + grass * 22 + pebbles * 4;
-    const b = 30 + n * 15;
-    return { r, g, b, h: n * 0.65 + pebbles * 0.25, rough: 0.93 };
+    const r = 24 + n * 18 + grass * 9 + pebbles * 5;
+    const g = 29 + n * 20 + grass * 16 + pebbles * 4;
+    const b = 20 + n * 11;
+    return { r, g, b, h: n * 0.65 + pebbles * 0.25, rough: 0.94 };
   });
   const soil = new THREE.MeshStandardMaterial({
     map: sl.map,
     normalMap: sl.normalMap,
-    normalScale: new THREE.Vector2(1.0, 1.0),
+    normalScale: new THREE.Vector2(1.05, 1.05),
     roughnessMap: sl.roughnessMap,
-    roughness: 0.94,
+    roughness: 0.95,
     metalness: 0.02,
   });
   applyMacroWorldVariation(soil, 0.07);
@@ -593,26 +595,26 @@ export function createPbrMaterialSet(
     envMapIntensity: 1.4,
   });
 
-  // 12. Procedural Infected Skin & Torn Cloth PBR materials (3 skin tones, 6 cloth outfits)
+  // 12. Procedural Infected Skin & Torn Cloth PBR materials (3 decayed skin tones, 6 bloodied outfits)
   const skinTints = [
-    [118, 128, 108],
-    [104, 114, 102],
-    [128, 116, 104],
+    [92, 104, 84],
+    [82, 92, 78],
+    [104, 90, 78],
   ] as const;
   const zombieSkins = skinTints.map(([sr, sg, sb], idx) => {
-    const tex = generateTextureSet(bioTexSize, maxAniso, 1, 1, 2.4, (u, v) => {
+    const tex = generateTextureSet(bioTexSize, maxAniso, 1, 1, 2.6, (u, v) => {
       const mottle = fbm(u * 10, v * 10, 200 + idx * 17, 4);
-      const veins = Math.abs(fbm(u * 18, v * 18, 250 + idx, 3) - 0.5) < 0.03 ? 0.72 : 1.0;
-      const wound = mottle > 0.68 ? (mottle - 0.68) * 3.0 : 0;
-      const r = (sr * (0.78 + mottle * 0.4) * (1 - wound) + 115 * wound) * veins;
-      const g = (sg * (0.78 + mottle * 0.4) * (1 - wound) + 22 * wound) * veins;
-      const b = (sb * (0.78 + mottle * 0.4) * (1 - wound) + 22 * wound) * veins;
-      return { r, g, b, h: mottle * 0.6 - wound * 0.3, rough: 0.72 - wound * 0.42 };
+      const veins = Math.abs(fbm(u * 18, v * 18, 250 + idx, 3) - 0.5) < 0.032 ? 0.65 : 1.0;
+      const wound = mottle > 0.63 ? (mottle - 0.63) * 3.1 : 0;
+      const r = (sr * (0.76 + mottle * 0.42) * (1 - wound) + 122 * wound) * veins;
+      const g = (sg * (0.76 + mottle * 0.42) * (1 - wound) + 18 * wound) * veins;
+      const b = (sb * (0.76 + mottle * 0.42) * (1 - wound) + 18 * wound) * veins;
+      return { r, g, b, h: mottle * 0.6 - wound * 0.35, rough: 0.7 - wound * 0.44 };
     });
     return new THREE.MeshStandardMaterial({
       map: tex.map,
       normalMap: tex.normalMap,
-      normalScale: new THREE.Vector2(0.9, 0.9),
+      normalScale: new THREE.Vector2(0.95, 0.95),
       roughnessMap: tex.roughnessMap,
       roughness: 0.72,
       metalness: 0.06,
@@ -620,12 +622,12 @@ export function createPbrMaterialSet(
   });
 
   const clothPalettes: [number, number, number, 'plaid' | 'lab' | 'overalls' | 'solid'][] = [
-    [56, 78, 62, 'overalls'],
-    [168, 174, 166, 'lab'],
-    [118, 52, 46, 'plaid'],
-    [62, 74, 88, 'solid'],
-    [88, 70, 52, 'plaid'],
-    [52, 54, 66, 'overalls'],
+    [44, 62, 48, 'overalls'],
+    [138, 144, 136, 'lab'],
+    [98, 40, 36, 'plaid'],
+    [48, 58, 70, 'solid'],
+    [72, 56, 42, 'plaid'],
+    [42, 44, 54, 'overalls'],
   ];
   const zombieCloths = clothPalettes.map(([cr, cg, cb, style], idx) => {
     const tex = generateTextureSet(bioTexSize, maxAniso, 1, 1, 2.0, (u, v) => {
@@ -776,6 +778,21 @@ export function createPbrMaterialSet(
   const contactShadowTex = new THREE.CanvasTexture(csCanvas);
   contactShadowTex.colorSpace = THREE.SRGBColorSpace;
 
+  // Radial glowing eye halo sprite texture (tinted via SpriteMaterial.color per zombie type)
+  const egCanvas = document.createElement('canvas');
+  egCanvas.width = 64;
+  egCanvas.height = 64;
+  const egCtx = egCanvas.getContext('2d')!;
+  const egGrad = egCtx.createRadialGradient(32, 32, 1, 32, 32, 30);
+  egGrad.addColorStop(0, 'rgba(255,255,255,1)');
+  egGrad.addColorStop(0.24, 'rgba(255,255,255,0.82)');
+  egGrad.addColorStop(0.6, 'rgba(255,255,255,0.22)');
+  egGrad.addColorStop(1, 'rgba(255,255,255,0)');
+  egCtx.fillStyle = egGrad;
+  egCtx.fillRect(0, 0, 64, 64);
+  const eyeGlowTex = new THREE.CanvasTexture(egCanvas);
+  eyeGlowTex.colorSpace = THREE.SRGBColorSpace;
+
   return {
     concrete,
     wetAsphalt,
@@ -803,6 +820,7 @@ export function createPbrMaterialSet(
     bloodSplatterTex,
     scorchDecalTex,
     contactShadowTex,
+    eyeGlowTex,
   };
 }
 
@@ -817,18 +835,23 @@ export function createWallBuyChalkTexture(
   const ctx = canvas.getContext('2d')!;
   ctx.clearRect(0, 0, 512, 256);
 
-  // Chalk outline frame
-  ctx.strokeStyle = 'rgba(236, 232, 218, 0.85)';
+  // Chalk outline frame with subtle luminous COD wall-buy chalk halo
+  ctx.shadowColor = 'rgba(248, 240, 210, 0.72)';
+  ctx.shadowBlur = 10;
+  ctx.strokeStyle = 'rgba(242, 236, 218, 0.9)';
   ctx.lineWidth = 4;
   ctx.setLineDash([12, 6]);
   ctx.strokeRect(18, 18, 476, 220);
 
   ctx.setLineDash([]);
-  ctx.fillStyle = 'rgba(236, 232, 218, 0.1)';
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = 'rgba(236, 232, 218, 0.12)';
   ctx.fillRect(22, 22, 468, 212);
 
-  // Weapon-specific chalk silhouette
-  ctx.strokeStyle = 'rgba(248, 245, 232, 0.94)';
+  // Weapon-specific glowing chalk silhouette
+  ctx.shadowColor = 'rgba(255, 244, 214, 0.85)';
+  ctx.shadowBlur = 12;
+  ctx.strokeStyle = 'rgba(255, 252, 240, 0.98)';
   ctx.lineWidth = 5;
   ctx.lineJoin = 'round';
   ctx.beginPath();

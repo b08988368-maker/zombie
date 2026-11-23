@@ -32,11 +32,11 @@ npm run preview
 - **Esc / P**: Pause & Settings
 
 ## Zones & Progression
-1. **Farmhouse Quarters**: Starting holdout with 2 barricaded windows, the *Hedgerow* pump shotgun wall-buy (1500 PTS), and the Silo Yard Gate (750 PTS).
-2. **Silo Yard**: Foggy exterior loop around twin silos and a ruined tractor, featuring Supply Crate Slot A and the Electric Arc Trap (1000 PTS).
-3. **Timber Barn**: Unlocked for 1000 PTS. Houses the *Rattler* SMG (1000 PTS), *Quickhands Elixir* (3000 PTS), 3 barricade windows, and an elevated hayloft vantage.
+1. **Farmhouse Quarters**: Starting holdout with 2 barricaded windows, the *Hedgerow* pump shotgun wall-buy (500 PTS), *Second Wind* (500 PTS, usable without power), and the Silo Yard Gate (750 PTS).
+2. **Silo Yard**: Foggy exterior loop around twin silos and a ruined tractor, featuring Supply Crate Slot A (marked by an overhead golden sky-beam) and the Electric Arc Trap (1000 PTS).
+3. **Timber Barn**: Unlocked for 1000 PTS. Houses the *Rattler* SMG (850 PTS), *Quickhands Elixir* (3000 PTS), 3 barricade windows, and an elevated hayloft vantage.
 4. **Bio-Lab Wing**: Unlocked for 1250 PTS. Houses the **Station Power Switch**, *Ironsight* rifle (1200 PTS), *Ironhide Tonic* (2500 PTS), and the Emergency Telemetry Radio.
-5. **Underground Bunker**: Unlocked for 1500 PTS. Houses the **Overclock Bench** (5000 PTS), *Second Wind* (500 PTS), *Twin Barrel Brew* (2000 PTS), and *Marathon Cordial* (2000 PTS).
+5. **Underground Bunker**: Unlocked for 1500 PTS. Houses the **Overclock Bench** (5000 PTS), *Twin Barrel Brew* (2000 PTS), and *Marathon Cordial* (2000 PTS).
 
 ## Testing
 ```bash

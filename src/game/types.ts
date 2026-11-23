@@ -23,6 +23,8 @@ export interface GameSettings {
   fov: number;
   sensitivity: number;
   headBob: boolean;
+  sprintMode: 'hold' | 'toggle';
+  aimAssist: boolean;
   masterVolume: number;
   musicVolume: number;
   sfxVolume: number;
@@ -124,6 +126,7 @@ export interface HudSnapshot {
   maxGrenades: number;
   perks: PerkId[];
   activePowerUps: ActivePowerUpState[];
+  powerUpBanner: { label: string; colorHex: string } | null;
   interactPrompt: InteractPrompt | null;
   pointDeltas: PointDelta[];
   hitMarkerType: 'none' | 'hit' | 'kill' | 'headshot';

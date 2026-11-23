@@ -50,8 +50,11 @@ export class GameEngine {
   private camera!: THREE.PerspectiveCamera;
   private flashlight!: THREE.SpotLight;
   private flashlightTarget!: THREE.Object3D;
+  private moonLight!: THREE.DirectionalLight;
+  private fogExp!: THREE.FogExp2;
   private sporePoints: THREE.Points | null = null;
   private flashlightOn = true;
+  private houndFogMix = 0;
   private postProcess!: PostProcessPipeline;
   private mats!: PbrMaterialSet;
 
@@ -78,7 +81,9 @@ export class GameEngine {
   private ignoreNextMouseMove = false;
   private lastMouseX: number | null = null;
   private lastMouseY: number | null = null;
-  private edgeTurnDir = 0;
+  private sprintToggled = false;
+  private wasMoving = false;
+  private wasAds = false;
   private disposed = false;
 
   private points: number = BALANCE.player.startingPoints;
@@ -89,6 +94,8 @@ export class GameEngine {
   private hitMarkerTimer = 0;
   private radioMessage: string | null = null;
   private radioTimer = 0;
+  private powerUpBanner: { label: string; colorHex: string } | null = null;
+  private powerUpBannerTimer = 0;
   private roundBannerVisible = true;
   private errorBanner: string | null = null;
 
@@ -115,7 +122,11 @@ export class GameEngine {
 
   private readonly tmpEye = new THREE.Vector3();
   private readonly tmpForward = new THREE.Vector3();
+  private readonly tmpAimDir = new THREE.Vector3();
   private readonly tmpUp = new THREE.Vector3(0, 1, 0);
+  private readonly baseFogColor = new THREE.Color(0x050807);
+  private readonly houndFogColor = new THREE.Color(0x220705);
+  private readonly tmpFogColor = new THREE.Color();
 
   constructor(container: HTMLElement, onSnapshot: (snap: HudSnapshot) => void) {
     this.container = container;
@@ -172,9 +183,10 @@ export class GameEngine {
     });
 
     this.scene = new THREE.Scene();
-    const fogColor = new THREE.Color(0x070a09);
+    const fogColor = new THREE.Color(0x050807);
     this.scene.background = fogColor;
-    this.scene.fog = new THREE.FogExp2(0x070a09, 0.032);
+    this.fogExp = new THREE.FogExp2(0x050807, 0.023);
+    this.scene.fog = this.fogExp;
 
     this.camera = new THREE.PerspectiveCamera(
       this.settings.fov,
@@ -184,8 +196,8 @@ export class GameEngine {
     );
     this.scene.add(this.camera);
 
-    // Camera-mounted tactical flashlight (toggleable via T)
-    this.flashlight = new THREE.SpotLight(0xfff1d6, 2.8, 28, Math.PI / 4.2, 0.95, 1.35);
+    // Focused warm tactical weapon flashlight (toggleable via T)
+    this.flashlight = new THREE.SpotLight(0xffefcf, 2.85, 28, Math.PI / 5.4, 0.75, 1.35);
     this.flashlight.position.set(0.06, -0.04, -0.45);
     this.flashlightTarget = new THREE.Object3D();
     this.flashlightTarget.position.set(0, -0.04, -12);
@@ -201,11 +213,11 @@ export class GameEngine {
     this.scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
     pmrem.dispose();
 
-    // Base moonlight & cool/warm contrast fill
-    const hemi = new THREE.HemisphereLight(0x2c3f57, 0x100d0a, 0.44);
+    // Dark horror moonlight & subtle cool/warm contrast fill
+    const hemi = new THREE.HemisphereLight(0x283a52, 0x0e0b08, 0.36);
     this.scene.add(hemi);
 
-    const moon = new THREE.DirectionalLight(0x88a8cc, 0.72);
+    const moon = new THREE.DirectionalLight(0x88acd4, 0.68);
     moon.position.set(-28, 42, -24);
     moon.castShadow = !this.isSoftwareGl;
     moon.shadow.mapSize.set(1024, 1024);
@@ -218,6 +230,7 @@ export class GameEngine {
     moon.shadow.bias = -0.0005;
     moon.shadow.normalBias = 0.02;
     this.scene.add(moon);
+    this.moonLight = moon;
 
     this.emitLoad(0.55, 'Synthesizing PBR Materials...');
     this.mats = createPbrMaterialSet(this.renderer, this.isSoftwareGl);
@@ -314,6 +327,7 @@ export class GameEngine {
       maxGrenades: 4,
       perks: [],
       activePowerUps: [],
+      powerUpBanner: null,
       interactPrompt: null,
       pointDeltas: [],
       hitMarkerType: 'none',
@@ -358,7 +372,9 @@ export class GameEngine {
     this.pendingSwapPress = false;
     this.lastMouseX = null;
     this.lastMouseY = null;
-    this.edgeTurnDir = 0;
+    this.sprintToggled = false;
+    this.wasMoving = false;
+    this.wasAds = false;
   }
 
   private exitPointerLockSafely(): void {
@@ -438,13 +454,16 @@ export class GameEngine {
     this.keysDown.add(e.code);
     if (e.code === 'KeyT') {
       this.flashlightOn = !this.flashlightOn;
-      this.flashlight.intensity = this.flashlightOn ? 2.8 : 0;
+      this.flashlight.intensity = this.flashlightOn ? 2.85 : 0;
       this.emitHud();
     }
     if (e.code === 'KeyX') {
       this.weapons.triggerInspect();
     }
     const kb = this.settings.keyBindings;
+    if (e.code === kb.sprint && !e.repeat && this.settings.sprintMode === 'toggle') {
+      this.sprintToggled = !this.sprintToggled;
+    }
     if (e.code === kb.reload) this.pendingReloadPress = true;
     if (e.code === kb.melee) this.pendingMeleePress = true;
     if (e.code === kb.grenade) this.pendingGrenadePress = true;
@@ -479,23 +498,9 @@ export class GameEngine {
     this.lastMouseX = e.clientX;
     this.lastMouseY = e.clientY;
 
-    if (this.pointerLockBlocked && !this.pointerLocked) {
-      const w = Math.max(1, window.innerWidth);
-      const edge = w * 0.14;
-      if (e.clientX <= edge) {
-        this.edgeTurnDir = -Math.pow((edge - e.clientX) / edge, 1.35);
-      } else if (e.clientX >= w - edge) {
-        this.edgeTurnDir = Math.pow((e.clientX - (w - edge)) / edge, 1.35);
-      } else {
-        this.edgeTurnDir = 0;
-      }
-    } else {
-      this.edgeTurnDir = 0;
-    }
-
     if (Math.abs(dx) > 450 || Math.abs(dy) > 450) return;
     const cfg = this.weapons.getActiveConfig();
-    const friction = !this.pointerLocked && this.isReticleNearZombie() ? 0.6 : 1.0;
+    const friction = this.settings.aimAssist && this.isReticleNearZombie() ? 0.58 : 1.0;
     this.player.applyLookDelta(dx * friction, dy * friction, this.settings, cfg.adsSensScale);
     this.weapons.addLookSway(dx * friction, dy * friction);
   };
@@ -516,9 +521,6 @@ export class GameEngine {
       this.mouseLeftDown = true;
       this.pendingFirePress = true;
     } else if (e.button === 2) {
-      if (!this.mouseRightDown && !this.pointerLocked) {
-        this.snapAimTowardNearestTarget();
-      }
       this.mouseRightDown = true;
     }
   };
@@ -582,6 +584,8 @@ export class GameEngine {
     this.hitMarkerType = 'none';
     this.hitMarkerTimer = 0;
     this.lastPrompt = null;
+    this.powerUpBanner = null;
+    this.powerUpBannerTimer = 0;
     this.lastTimeMs = performance.now();
     this.roundBannerVisible = true;
     this.radioMessage = 'Station Radio: "Bloom containment failed. Hold the farmhouse until dawn."';
@@ -615,6 +619,8 @@ export class GameEngine {
     this.hitMarkerType = 'none';
     this.hitMarkerTimer = 0;
     this.lastPrompt = null;
+    this.powerUpBanner = null;
+    this.powerUpBannerTimer = 0;
     this.lastTimeMs = performance.now();
     this.roundBannerVisible = true;
     this.radioMessage = 'Station Radio: "Stay sharp. Tear-in from the west windows."';
@@ -683,20 +689,17 @@ export class GameEngine {
     }
 
     if (this.screen === 'menu') {
-      // Atmospheric 3D backdrop camera orbit across the foggy Silo Yard
-      this.menuOrbitAngle += rawDt * 0.14;
-      this.camera.position.set(
-        Math.cos(this.menuOrbitAngle) * 10.5,
-        3.6,
-        -1.5 + Math.sin(this.menuOrbitAngle) * 8.5,
-      );
-      this.camera.lookAt(-3.5, 2.2, -1.5);
+      // Cinematic Main Menu vista across Silo Yard: frames Tractor, Twin Silos, Mystery Box Sky-Beam & Yard Lamps
+      this.menuOrbitAngle += rawDt * 0.1;
+      const sway = Math.sin(this.menuOrbitAngle) * 3.8;
+      this.camera.position.set(4.5 + sway, 2.75, 6.4);
+      this.camera.lookAt(-5.5, 2.1, -3.5);
       this.weapons.viewmodelRoot.visible = false;
-      this.flashlight.intensity = 0.8;
-      this.animateLights(nowMs * 0.001);
+      this.flashlight.intensity = 0;
+      this.animateLights(nowMs * 0.001, rawDt);
     } else if (this.screen === 'playing') {
       this.weapons.viewmodelRoot.visible = true;
-      this.flashlight.intensity = this.flashlightOn ? 2.8 : 0;
+      this.flashlight.intensity = this.flashlightOn ? 2.85 : 0;
       this.stepSimulation(rawDt, nowMs * 0.001);
     } else {
       this.weapons.viewmodelRoot.visible = this.screen === 'paused';
@@ -759,15 +762,34 @@ export class GameEngine {
     const kb = this.settings.keyBindings;
     const gp = this.pollGamepad();
 
+    const forwardHeld = this.keysDown.has(kb.forward) || gp.dy < -0.25;
+    const backwardHeld = this.keysDown.has(kb.backward) || gp.dy > 0.25;
+    const leftHeld = this.keysDown.has(kb.left) || gp.dx < -0.25;
+    const rightHeld = this.keysDown.has(kb.right) || gp.dx > 0.25;
+    const crouchHeld = this.keysDown.has(kb.crouch);
+    const adsHeld = this.mouseRightDown || gp.ads;
+    const movingFwdOrStrafe = (forwardHeld || leftHeld || rightHeld) && !backwardHeld;
+
+    if (this.settings.sprintMode === 'toggle') {
+      if (gp.sprint) this.sprintToggled = true;
+      if (backwardHeld || crouchHeld || adsHeld || (this.wasMoving && !movingFwdOrStrafe)) {
+        this.sprintToggled = false;
+      }
+    }
+    this.wasMoving = movingFwdOrStrafe;
+
     const input: PlayerInputState = {
-      forward: this.keysDown.has(kb.forward) || gp.dy < -0.25,
-      backward: this.keysDown.has(kb.backward) || gp.dy > 0.25,
-      left: this.keysDown.has(kb.left) || gp.dx < -0.25,
-      right: this.keysDown.has(kb.right) || gp.dx > 0.25,
+      forward: forwardHeld,
+      backward: backwardHeld,
+      left: leftHeld,
+      right: rightHeld,
       jump: this.keysDown.has(kb.jump) || gp.jump,
-      sprint: this.keysDown.has(kb.sprint) || gp.sprint,
-      crouch: this.keysDown.has(kb.crouch),
-      ads: this.mouseRightDown || gp.ads,
+      sprint:
+        this.settings.sprintMode === 'toggle'
+          ? this.sprintToggled
+          : this.keysDown.has(kb.sprint) || gp.sprint,
+      crouch: crouchHeld,
+      ads: adsHeld,
       fireHeld: this.mouseLeftDown || gp.fire,
       firePressed: this.pendingFirePress,
       reloadPressed: this.pendingReloadPress || gp.reload,
@@ -776,6 +798,11 @@ export class GameEngine {
       grenadePressed: this.pendingGrenadePress,
       swapPressed: this.pendingSwapPress,
     };
+
+    if (this.settings.aimAssist && !this.wasAds && input.ads) {
+      this.snapAimTowardNearestTarget();
+    }
+    this.wasAds = input.ads;
 
     this.pendingFirePress = false;
     this.pendingReloadPress = false;
@@ -786,8 +813,7 @@ export class GameEngine {
     const activeCfg = this.weapons.getActiveConfig();
     const yawTurn =
       (this.keysDown.has('ArrowLeft') ? -1 : 0) +
-      (this.keysDown.has('ArrowRight') ? 1 : 0) +
-      (!this.pointerLocked && this.pointerLockBlocked ? this.edgeTurnDir : 0);
+      (this.keysDown.has('ArrowRight') ? 1 : 0);
     const pitchTurn =
       (this.keysDown.has('ArrowUp') ? -1 : 0) +
       (this.keysDown.has('ArrowDown') ? 1 : 0);
@@ -946,6 +972,10 @@ export class GameEngine {
       (type, kx, ky, kz) => {
         this.handleEnemyKilled(type, kx, ky, kz, false, false);
       },
+      (_id, label, colorHex) => {
+        this.powerUpBanner = { label, colorHex };
+        this.powerUpBannerTimer = 2.6;
+      },
     );
 
     // Timers
@@ -957,10 +987,14 @@ export class GameEngine {
       this.radioTimer -= dt;
       if (this.radioTimer <= 0) this.radioMessage = null;
     }
+    if (this.powerUpBannerTimer > 0) {
+      this.powerUpBannerTimer -= dt;
+      if (this.powerUpBannerTimer <= 0) this.powerUpBanner = null;
+    }
     const now = performance.now();
     this.pointDeltas = this.pointDeltas.filter((d) => now - d.timestamp < 1400);
 
-    this.animateLights(elapsedSec);
+    this.animateLights(elapsedSec, dt);
   }
 
   private lastPrompt: ReturnType<InteractablesSystem['update']> = null;
@@ -1108,14 +1142,14 @@ export class GameEngine {
   private snapAimTowardNearestTarget(): void {
     this.camera.getWorldPosition(this.tmpEye);
     this.camera.getWorldDirection(this.tmpForward);
-    let bestDot = 0.97;
+    let bestDot = 0.968;
     let bestDx = 0;
     let bestDy = 0;
     let bestDz = 0;
     let found = false;
     for (const e of this.zombies.entities) {
       if (!e.active || e.state === 'dying' || e.state === 'dead') continue;
-      const headY = e.y + (e.type === 'hound' ? 0.58 : e.isCrawler ? 0.42 : 1.46);
+      const headY = e.y + (e.type === 'hound' ? 0.58 : e.isCrawler ? 0.42 : 1.44);
       const dx = e.x - this.tmpEye.x;
       const dy = headY - this.tmpEye.y;
       const dz = e.z - this.tmpEye.z;
@@ -1123,6 +1157,9 @@ export class GameEngine {
       if (dist < 0.6 || dist > 26) continue;
       const dot = (dx * this.tmpForward.x + dy * this.tmpForward.y + dz * this.tmpForward.z) / dist;
       if (dot > bestDot) {
+        this.tmpAimDir.set(dx / dist, dy / dist, dz / dist);
+        const wallHit = this.bvh.raycast(this.tmpEye, this.tmpAimDir, dist);
+        if (wallHit && wallHit.distance < dist - 0.15) continue;
         bestDot = dot;
         bestDx = dx;
         bestDy = dy;
@@ -1137,31 +1174,54 @@ export class GameEngine {
     let dyaw = targetYaw - this.player.yaw;
     while (dyaw > Math.PI) dyaw -= Math.PI * 2;
     while (dyaw < -Math.PI) dyaw += Math.PI * 2;
-    this.player.yaw += dyaw * 0.65;
+    this.player.yaw += dyaw * 0.58;
     this.player.pitch = THREE.MathUtils.clamp(
-      this.player.pitch + (targetPitch - this.player.pitch) * 0.65,
+      this.player.pitch + (targetPitch - this.player.pitch) * 0.58,
       -1.45,
       1.45,
     );
   }
 
-  private animateLights(t: number): void {
+  private animateLights(t: number, dt = 0.016): void {
     for (const fl of this.map.flickerLights) {
       const n = Math.sin(t * 7.3 + fl.phase) * Math.sin(t * 17.1 + fl.phase * 2.1);
       fl.light.intensity = fl.baseIntensity * (n > 0.86 ? 0.55 : 0.96 + n * 0.04);
     }
+
+    const targetMix = this.screen === 'playing' && this.rounds.isHoundRound ? 1 : 0;
+    this.houndFogMix += (targetMix - this.houndFogMix) * Math.min(1, dt * 1.4);
+    if (this.fogExp && this.scene.background instanceof THREE.Color) {
+      this.tmpFogColor.copy(this.baseFogColor).lerp(this.houndFogColor, this.houndFogMix);
+      this.fogExp.color.copy(this.tmpFogColor);
+      this.scene.background.copy(this.tmpFogColor);
+      this.fogExp.density = 0.023 + this.houndFogMix * 0.007;
+    }
+    if (this.moonLight) {
+      if (this.houndFogMix > 0.2) {
+        const bolt = Math.sin(t * 2.3) * Math.sin(t * 11.7 + 1.4);
+        this.moonLight.intensity = bolt > 0.94 ? 2.4 : 0.58;
+      } else {
+        this.moonLight.intensity = 0.68;
+      }
+    }
   }
 
   private getObjectiveHint(): string | null {
-    if (this.rounds.round > 4) return null;
+    const remaining = this.rounds.remainingToSpawn + this.zombies.getAliveCount();
+    if (this.rounds.phase === 'active' && remaining > 0 && remaining <= 3) {
+      return `${remaining} hostile${remaining === 1 ? '' : 's'} remaining in sector — eliminate to advance wave.`;
+    }
     if (!this.interactables.unlockedZones.has('silo_yard')) {
-      return 'Defend the Farmhouse, rebuild barricades (F), and unlock the Silo Yard Gate (750 PTS).';
+      return 'Grab Second Wind (500 PTS) or Hedgerow (500 PTS), then unlock the Silo Yard Gate (750 PTS).';
     }
     if (!this.interactables.unlockedZones.has('lab_wing')) {
-      return 'Cross the Silo Yard and unlock the Bio-Lab Airlock (1250 PTS) to reach the Power Switch.';
+      return 'Follow the golden sky-beam to the Supply Crate, or unlock the Bio-Lab Airlock (1250 PTS).';
     }
     if (!this.interactables.powerOn) {
-      return 'Locate and flip the Station Power Switch on the east wall of the Bio-Lab.';
+      return 'Flip the Station Power Switch on the east Bio-Lab wall to activate Perks & Bunker Overclock.';
+    }
+    if (!this.interactables.unlockedZones.has('bunker') && this.rounds.round <= 6) {
+      return 'Unlock the Underground Bunker (1500 PTS) to access Ironhide / Overclock Bench.';
     }
     return null;
   }
@@ -1210,6 +1270,7 @@ export class GameEngine {
       maxGrenades: BALANCE.player.grenadesMax,
       perks: Array.from(this.interactables.perks),
       activePowerUps: this.interactables.getActivePowerUpList(),
+      powerUpBanner: this.powerUpBanner ? { ...this.powerUpBanner } : null,
       interactPrompt: this.lastPrompt ? { ...this.lastPrompt } : null,
       pointDeltas: [...this.pointDeltas],
       hitMarkerType: this.hitMarkerType,

@@ -7,20 +7,60 @@ interface GameHudProps {
   onResumePointer: () => void;
 }
 
+function PerkIconPath({ perkId }: { perkId: PerkId }) {
+  switch (perkId) {
+    case 'ironhide':
+      // Shield + cross
+      return (
+        <>
+          <path d="M12 3.5L5.5 6.5V12c0 4.2 2.8 7.5 6.5 8.8 3.7-1.3 6.5-4.6 6.5-8.8V6.5L12 3.5z" fill="currentColor" fillOpacity="0.22" stroke="currentColor" strokeWidth="1.6" />
+          <path d="M12 8.2v6.6M8.7 11.5h6.6" stroke="#ffffff" strokeWidth="1.9" strokeLinecap="round" />
+        </>
+      );
+    case 'second_wind':
+      // Winged revive cross / heart
+      return (
+        <>
+          <path d="M12 19.2s-6.4-4-6.4-8.7a3.6 3.6 0 0 1 6.4-2.2 3.6 3.6 0 0 1 6.4 2.2c0 4.7-6.4 8.7-6.4 8.7z" fill="currentColor" fillOpacity="0.3" stroke="currentColor" strokeWidth="1.5" />
+          <path d="M12 9.4v4.6M9.7 11.7h4.6" stroke="#ffffff" strokeWidth="1.7" strokeLinecap="round" />
+        </>
+      );
+    case 'quickhands':
+      // Lightning bolt reload
+      return (
+        <path d="M13.5 3.8L7.2 12.6h4.4l-1.1 7.6 6.5-8.9h-4.5l1-7.5z" fill="currentColor" stroke="#ffffff" strokeWidth="1.2" strokeLinejoin="round" />
+      );
+    case 'twin_barrel':
+      // Twin bullets
+      return (
+        <>
+          <path d="M8.5 18.5V9.5c0-1.9 1.3-4.2 1.3-4.2s1.3 2.3 1.3 4.2v9h-2.6zM13.4 18.5V9.5c0-1.9 1.3-4.2 1.3-4.2s1.3 2.3 1.3 4.2v9h-2.6z" fill="currentColor" stroke="#ffffff" strokeWidth="1.1" />
+        </>
+      );
+    case 'marathon':
+      // Winged sprint chevron
+      return (
+        <path d="M5.5 16.5l4.2-4.5-3.2-2 6.8-4.5 2.1 2.2-3.4 2.5 4.8 3.2-2.6 3.1H5.5z" fill="currentColor" stroke="#ffffff" strokeWidth="1.1" strokeLinejoin="round" />
+      );
+  }
+}
+
 function PerkSigil({ perkId }: { perkId: PerkId }) {
   const cfg = BALANCE.perks.list[perkId];
   return (
     <div
-      className="flex items-center gap-1.5 px-2 py-1 bg-[#111413]/90 border border-white/10"
+      className="relative flex items-center justify-center w-9 h-9 rounded-full border shadow-[0_2px_10px_rgba(0,0,0,0.9)]"
+      style={{
+        borderColor: `${cfg.accentHex}cc`,
+        background: `radial-gradient(circle at 32% 30%, ${cfg.accentHex}55, #0a0c0b 82%)`,
+        color: cfg.accentHex,
+        boxShadow: `0 0 12px ${cfg.accentHex}44, inset 0 1px 2px rgba(255,255,255,0.22)`,
+      }}
       title={`${cfg.name}: ${cfg.shortDesc}`}
     >
-      <span
-        className="inline-block w-2.5 h-2.5 rotate-45 shrink-0"
-        style={{ backgroundColor: cfg.accentHex }}
-      />
-      <span className="text-[11px] font-medium text-[#e4dfd5] tracking-wide whitespace-nowrap">
-        {cfg.name.split(' ')[0]}
-      </span>
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <PerkIconPath perkId={perkId} />
+      </svg>
     </div>
   );
 }
@@ -47,21 +87,21 @@ export function GameHud({ snap, onResumePointer }: GameHudProps) {
         />
       )}
 
-      {/* Top-Left: Sector, Power, Hostiles, Easter Egg & Early Objective */}
-      <div className="fixed top-5 left-6 flex flex-col gap-1.5 max-w-[310px]">
-        <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs tracking-wider uppercase text-[#c4beaf] bg-[#0d100f]/78 px-2.5 py-1 border border-white/10">
+      {/* Top-Left: Unboxed Sector, Power, Hostiles & Objective Strip */}
+      <div className="fixed top-5 left-6 flex flex-col gap-1 max-w-[320px]">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] tracking-[0.14em] uppercase text-[#c4beaf] border-l-2 border-amber-500/75 bg-gradient-to-r from-[#090b0a]/80 via-[#090b0a]/45 to-transparent pl-3 pr-6 py-1.5">
           <span className="font-semibold text-[#ece9e2]">{snap.currentZoneLabel}</span>
-          <span aria-hidden="true">·</span>
+          <span aria-hidden="true" className="text-white/30">/</span>
           <span className={snap.powerOn ? 'text-emerald-400' : 'text-amber-400'}>
             {snap.powerOn ? 'Power Online' : 'Power Offline'}
           </span>
-          <span aria-hidden="true">·</span>
+          <span aria-hidden="true" className="text-white/30">/</span>
           <span className="text-[#ece9e2] font-mono-tabular">
-            Hostiles {snap.zombiesRemaining}
+            {snap.zombiesRemaining} Hostiles
           </span>
           {snap.easterEggStep >= 1 && snap.easterEggStep < 4 && (
             <>
-              <span aria-hidden="true">·</span>
+              <span aria-hidden="true" className="text-white/30">/</span>
               <span className="text-amber-300 tabular-nums">
                 {snap.easterEggStep === 1 && `Fuses ${snap.fusesCollected}/3`}
                 {snap.easterEggStep === 2 && 'Radio Ready'}
@@ -71,7 +111,7 @@ export function GameHud({ snap, onResumePointer }: GameHudProps) {
           )}
         </div>
         {snap.objectiveHint && (
-          <p className="text-[11px] text-[#a8a295] leading-snug bg-[#0d100f]/82 px-2.5 py-1.5 border border-white/10">
+          <p className="text-[11px] text-[#b8b1a3] leading-snug pl-3.5 pr-4 py-0.5 drop-shadow-[0_1px_3px_rgba(0,0,0,0.95)]">
             {snap.objectiveHint}
           </p>
         )}
@@ -111,15 +151,29 @@ export function GameHud({ snap, onResumePointer }: GameHudProps) {
         </div>
       )}
 
-      {/* Top-Center: Round Banner & Radio Transmissions */}
-      <div className="fixed top-5 left-1/2 -translate-x-1/2 flex flex-col items-center gap-2 text-center max-w-[460px]">
+      {/* Top-Center: Dramatic Unboxed Round Banner & Radio Transmissions */}
+      <div className="fixed top-5 left-1/2 -translate-x-1/2 flex flex-col items-center gap-2 text-center max-w-[500px]">
         {snap.roundBannerText && (
-          <div className="font-display text-3xl tracking-[0.18em] uppercase text-[#ece9e2] px-6 py-1.5 bg-[#0a0c0b]/82 border border-white/10">
-            {snap.roundBannerText}
+          <div className="flex flex-col items-center gap-1 px-8 py-1">
+            <div
+              className="font-display text-4xl font-bold tracking-[0.26em] uppercase text-[#ece9e2]"
+              style={{
+                textShadow: snap.isHoundRound
+                  ? '0 0 22px rgba(234, 179, 8, 0.7), 0 3px 10px rgba(0,0,0,0.95)'
+                  : '0 0 22px rgba(185, 28, 28, 0.78), 0 3px 10px rgba(0,0,0,0.95)',
+              }}
+            >
+              {snap.roundBannerText}
+            </div>
+            <div
+              className={`w-64 h-[1px] bg-gradient-to-r from-transparent ${
+                snap.isHoundRound ? 'via-amber-400/80' : 'via-red-600/85'
+              } to-transparent`}
+            />
           </div>
         )}
         {snap.radioMessage && (
-          <div className="text-xs text-[#e5decb] bg-[#0e1210]/92 border border-amber-500/35 px-4 py-1.5">
+          <div className="text-xs text-[#ece6d8] bg-gradient-to-r from-transparent via-[#0c0f0e]/90 to-transparent border-y border-amber-500/35 px-8 py-1.5 drop-shadow-[0_2px_6px_rgba(0,0,0,0.95)]">
             {snap.radioMessage}
           </div>
         )}
@@ -131,11 +185,32 @@ export function GameHud({ snap, onResumePointer }: GameHudProps) {
           {snap.activePowerUps.map((pu) => (
             <div
               key={pu.id}
-              className="px-3 py-1 bg-[#111413]/90 border border-amber-400/35 text-xs font-mono-tabular text-amber-300"
+              className="px-3 py-1 bg-[#0b0e0d]/78 border-b-2 border-amber-400/70 text-[11px] font-mono-tabular uppercase tracking-wider text-amber-300 shadow-[0_2px_10px_rgba(0,0,0,0.8)]"
             >
               {pu.label} · {Math.ceil(pu.remaining)}s
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Power-Up Collector Announcer Banner */}
+      {snap.powerUpBanner && (
+        <div className="fixed top-[20%] left-1/2 -translate-x-1/2 flex flex-col items-center pointer-events-none">
+          <div
+            className="font-display text-4xl font-bold tracking-[0.26em] uppercase px-10 py-1"
+            style={{
+              color: snap.powerUpBanner.colorHex,
+              textShadow: `0 0 24px ${snap.powerUpBanner.colorHex}88, 0 3px 10px rgba(0,0,0,0.95)`,
+            }}
+          >
+            {snap.powerUpBanner.label}
+          </div>
+          <div
+            className="w-56 h-[1px]"
+            style={{
+              background: `linear-gradient(to right, transparent, ${snap.powerUpBanner.colorHex}aa, transparent)`,
+            }}
+          />
         </div>
       )}
 
@@ -171,14 +246,22 @@ export function GameHud({ snap, onResumePointer }: GameHudProps) {
             );
           }
 
+          if (snap.isAds) {
+            return (
+              <div data-testid="crosshair" className="relative w-8 h-8 flex items-center justify-center">
+                <span className="w-[3px] h-[3px] rounded-full bg-amber-300 shadow-[0_0_5px_rgba(251,191,36,0.95)]" />
+                <span className="absolute left-1/2 -translate-x-1/2 w-[1px] h-[3px] bg-white/30 top-0" />
+                <span className="absolute left-1/2 -translate-x-1/2 w-[1px] h-[3px] bg-white/30 bottom-0" />
+                <span className="absolute top-1/2 -translate-y-1/2 h-[1px] w-[3px] bg-white/30 left-0" />
+                <span className="absolute top-1/2 -translate-y-1/2 h-[1px] w-[3px] bg-white/30 right-0" />
+              </div>
+            );
+          }
+
           return (
             <div data-testid="crosshair" className="relative w-20 h-20 flex items-center justify-center">
               {/* High-contrast precision center dot */}
-              <span
-                className={`w-[3px] h-[3px] rounded-full shadow-[0_0_2px_rgba(0,0,0,0.95),0_0_4px_rgba(0,0,0,0.85)] ${
-                  snap.isAds ? 'bg-amber-300' : 'bg-white'
-                }`}
-              />
+              <span className="w-[3px] h-[3px] rounded-full bg-white shadow-[0_0_2px_rgba(0,0,0,0.95),0_0_4px_rgba(0,0,0,0.85)]" />
               {/* Top prong */}
               <span
                 className="absolute left-1/2 -translate-x-1/2 w-[2px] bg-white/95 shadow-[0_0_2px_rgba(0,0,0,0.95)] transition-[bottom] duration-75"
@@ -249,29 +332,6 @@ export function GameHud({ snap, onResumePointer }: GameHudProps) {
             }}
           >
             <div className="mx-auto w-12 h-2 bg-red-600/85" />
-          </div>
-        )}
-
-        {/* Crisp center-offset kill & headshot score callouts */}
-        {snap.pointDeltas.some((d) => d.reason !== 'Hit') && (
-          <div className="absolute left-[54%] top-[47%] flex flex-col items-start gap-0.5">
-            {snap.pointDeltas
-              .filter((d) => d.reason !== 'Hit')
-              .slice(-3)
-              .map((d) => (
-                <div
-                  key={d.id}
-                  className={`font-mono-tabular text-[11px] font-bold tracking-wider uppercase drop-shadow-[0_1px_2px_rgba(0,0,0,0.95)] ${
-                    d.reason === 'Headshot'
-                      ? 'text-amber-300'
-                      : d.reason === 'Melee Kill'
-                        ? 'text-emerald-300'
-                        : 'text-[#f3efe6]'
-                  }`}
-                >
-                  +{d.amount} {d.reason}
-                </div>
-              ))}
           </div>
         )}
       </div>
@@ -374,8 +434,8 @@ export function GameHud({ snap, onResumePointer }: GameHudProps) {
         </div>
       )}
 
-      {/* Bottom-Left: Tally Round Counter, Health & Perks */}
-      <div className="fixed bottom-5 left-6 flex flex-col gap-2.5">
+      {/* Bottom-Left: Unboxed COD Tally Counter, Slim Vitality & Perk Medallions */}
+      <div className="fixed bottom-5 left-6 flex flex-col gap-2.5 bg-gradient-to-r from-[#070908]/75 via-[#070908]/35 to-transparent pr-10 py-1.5 pl-1">
         {snap.perks.length > 0 && (
           <div className="flex items-center gap-2">
             {snap.perks.map((p) => (
@@ -384,20 +444,20 @@ export function GameHud({ snap, onResumePointer }: GameHudProps) {
           </div>
         )}
 
-        <div className="flex items-end gap-5 bg-[#0c0e0d]/88 border border-white/10 px-4 py-3">
+        <div className="flex items-end gap-5">
           <TallyCounter round={snap.round} isHoundRound={snap.isHoundRound} />
 
-          <div className="w-40">
-            <div className="flex items-center justify-between text-xs mb-1">
-              <span className="text-[#9e988a] uppercase tracking-wider">Vitality</span>
+          <div className="w-36 pb-1">
+            <div className="flex items-center justify-between text-[10px] tracking-[0.16em] uppercase mb-1 drop-shadow-[0_1px_2px_rgba(0,0,0,0.95)]">
+              <span className="text-[#a8a295]">Vitality</span>
               <span className="font-mono-tabular font-semibold text-[#ece9e2]">
                 {snap.health}/{snap.maxHealth}
               </span>
             </div>
-            <div className="h-2 bg-black/70 overflow-hidden">
+            <div className="h-1.5 bg-black/75 overflow-hidden">
               <div
                 className={`h-full transition-all duration-100 ${
-                  lowHealth ? 'bg-red-500' : 'bg-[#d4cec0]'
+                  lowHealth ? 'bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.8)]' : 'bg-[#d8d2c5]'
                 }`}
                 style={{ width: `${Math.round(healthRatio * 100)}%` }}
               />
@@ -406,52 +466,99 @@ export function GameHud({ snap, onResumePointer }: GameHudProps) {
         </div>
       </div>
 
-      {/* Bottom-Right: Points, Deltas, Weapon & Ammo */}
-      <div className="fixed bottom-5 right-6 flex flex-col items-end gap-2">
-        {/* Float-up point deltas */}
-        <div className="flex flex-col items-end gap-0.5 min-h-[24px]">
-          {snap.pointDeltas.map((d) => (
+      {/* Bottom-Right: Unboxed COD Points, Weapon Plate & Large Ammo Counter */}
+      <div className="fixed bottom-5 right-6 flex flex-col items-end gap-1.5">
+        {/* Float-up point deltas stacked cleanly above points */}
+        <div className="flex flex-col items-end gap-0.5 min-h-[22px] pr-1">
+          {snap.pointDeltas.slice(-5).map((d) => (
             <div
               key={d.id}
-              className="font-mono-tabular text-xs font-semibold text-amber-400"
+              className={`font-mono-tabular text-xs font-semibold drop-shadow-[0_1px_3px_rgba(0,0,0,0.95)] ${
+                d.reason === 'Headshot'
+                  ? 'text-amber-300'
+                  : d.reason === 'Melee Kill'
+                    ? 'text-emerald-300'
+                    : 'text-amber-400'
+              }`}
             >
               +{d.amount} {d.reason}
             </div>
           ))}
         </div>
 
-        <div className="bg-[#0c0e0d]/88 border border-white/10 px-4 py-3 min-w-[240px]">
-          <div className="flex items-baseline justify-between gap-6 border-b border-white/10 pb-2 mb-2">
-            <span className="text-xs uppercase tracking-wider text-[#9e988a]">Points</span>
-            <span className="font-mono-tabular text-2xl font-bold text-amber-400">
+        <div
+          className={`bg-gradient-to-l from-[#070908]/82 via-[#070908]/45 to-transparent border-r-2 ${
+            activeWeapon?.upgraded ? 'border-sky-400/80' : 'border-amber-500/80'
+          } pl-12 pr-4 py-2.5 min-w-[270px] flex flex-col items-end gap-1.5`}
+        >
+          {/* Points Score */}
+          <div className="flex items-baseline gap-3">
+            <span className="text-[10px] uppercase tracking-[0.2em] text-[#9e988a]">Points</span>
+            <span
+              className="font-mono-tabular text-3xl font-bold text-amber-400 leading-none"
+              style={{ textShadow: '0 0 14px rgba(245, 158, 11, 0.35), 0 2px 6px rgba(0,0,0,0.95)' }}
+            >
               {snap.points.toLocaleString()}
             </span>
           </div>
 
+          {/* Weapon Slots */}
+          {snap.weapons.length > 0 && (
+            <div className="flex items-center gap-1.5 w-full justify-end">
+              {snap.weapons.map((w, idx) => (
+                <div
+                  key={`${w.id}-${idx}`}
+                  className={`px-2 py-0.5 text-[10px] font-mono-tabular uppercase truncate border-b ${
+                    idx === snap.activeSlot
+                      ? 'border-amber-400/80 text-[#ece9e2] bg-amber-500/12'
+                      : 'border-white/15 text-[#8d877a] bg-black/35'
+                  }`}
+                >
+                  [{idx + 1}] {w.name}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Active Weapon & Oversized Magazine Counter */}
           {activeWeapon && (
-            <div className="flex items-baseline justify-between gap-5">
-              <div className="flex flex-col">
+            <div className="flex items-end justify-between gap-6 w-full pt-0.5">
+              <div className="flex flex-col items-start">
                 <div className="flex items-center gap-2">
                   <span
-                    className={`font-display text-lg tracking-wide uppercase leading-tight ${
+                    className={`font-display text-lg tracking-wider uppercase leading-tight drop-shadow-[0_1px_3px_rgba(0,0,0,0.95)] ${
                       activeWeapon.upgraded ? 'text-sky-300' : 'text-[#ece9e2]'
                     }`}
                   >
                     {activeWeapon.name}
                   </span>
                   {activeWeapon.upgraded && (
-                    <span className="text-[10px] font-mono-tabular uppercase tracking-wider px-1.5 py-0.5 bg-sky-500/20 border border-sky-400/40 text-sky-300">
+                    <span className="text-[10px] font-mono-tabular uppercase tracking-wider px-1.5 py-0.5 bg-sky-500/20 border border-sky-400/45 text-sky-300">
                       OC
                     </span>
                   )}
                 </div>
-                <span className="text-[11px] text-[#8d877a]">
-                  Slot {snap.activeSlot + 1}/{snap.weapons.length} · Frag {snap.grenades}/
-                  {snap.maxGrenades} · [T] Torch {snap.flashlightOn ? 'ON' : 'OFF'} · [X] Inspect
-                </span>
+                <div className="flex items-center gap-2.5 text-[10px] text-[#9e988a] mt-0.5">
+                  <span className="flex items-center gap-1" title="Frag Grenades [G]">
+                    <span className="uppercase tracking-wider">Frag</span>
+                    <span className="flex items-center gap-1">
+                      {Array.from({ length: snap.maxGrenades }).map((_, gi) => (
+                        <span
+                          key={gi}
+                          className={`inline-block w-1.5 h-1.5 rotate-45 ${
+                            gi < snap.grenades ? 'bg-amber-400 shadow-[0_0_4px_rgba(251,191,36,0.8)]' : 'bg-white/20'
+                          }`}
+                        />
+                      ))}
+                    </span>
+                  </span>
+                  <span>·</span>
+                  <span>[T] Torch {snap.flashlightOn ? 'ON' : 'OFF'}</span>
+                </div>
               </div>
+
               <div
-                className={`font-mono-tabular text-2xl font-bold ${
+                className={`font-display text-4xl font-bold tabular-nums leading-none drop-shadow-[0_2px_6px_rgba(0,0,0,0.95)] ${
                   activeWeapon.mag === 0
                     ? 'text-red-400'
                     : activeWeapon.mag <= Math.max(1, Math.ceil(activeWeapon.magSize * 0.25))
@@ -460,7 +567,7 @@ export function GameHud({ snap, onResumePointer }: GameHudProps) {
                 }`}
               >
                 {activeWeapon.mag}
-                <span className="text-sm text-[#8d877a] font-normal">
+                <span className="font-mono-tabular text-base text-[#9e988a] font-normal ml-1">
                   /{activeWeapon.reserve}
                 </span>
               </div>

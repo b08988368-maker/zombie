@@ -3,19 +3,32 @@ interface TallyCounterProps {
   isHoundRound: boolean;
 }
 
+const SLASH_PATHS = [
+  'M 4 5 Q 3 19 4.5 34',
+  'M 13 4 Q 11.5 18 13 35',
+  'M 22 5 Q 23.5 19 21.5 34',
+  'M 31 4 Q 29.5 18 31 35',
+];
+
 export function TallyCounter({ round, isHoundRound }: TallyCounterProps) {
-  const accent = isHoundRound ? '#eab308' : '#b91c1c';
+  const accent = isHoundRound ? '#facc15' : '#dc2626';
+  const glow = isHoundRound
+    ? 'rgba(234, 179, 8, 0.55)'
+    : 'rgba(185, 28, 28, 0.72)';
 
   if (round > 10) {
     return (
-      <div className="flex items-baseline gap-2.5">
+      <div className="flex items-baseline gap-2.5" aria-label={`Round ${round}`}>
         <span
-          className="font-display text-5xl font-bold tracking-tight tabular-nums leading-none"
-          style={{ color: accent, textShadow: '0 2px 10px rgba(0,0,0,0.85)' }}
+          className="font-display text-6xl font-bold tracking-tight tabular-nums leading-none"
+          style={{
+            color: accent,
+            textShadow: `0 0 18px ${glow}, 0 3px 10px rgba(0,0,0,0.95)`,
+          }}
         >
           {round}
         </span>
-        <span className="text-xs uppercase tracking-widest text-[#9c9688]">
+        <span className="text-[11px] uppercase tracking-[0.22em] text-[#c4beaf] font-semibold">
           {isHoundRound ? 'Feral Wave' : 'Round'}
         </span>
       </div>
@@ -24,44 +37,53 @@ export function TallyCounter({ round, isHoundRound }: TallyCounterProps) {
 
   const groups = Math.floor(round / 5);
   const rem = round % 5;
+  const totalWidth = Math.max(38, groups * 48 + (rem > 0 ? rem * 9.5 + 8 : 0));
 
   return (
-    <div className="flex items-center gap-3" aria-label={`Round ${round}`}>
+    <div className="flex items-end gap-2.5" aria-label={`Round ${round}`}>
       <svg
-        width={Math.max(32, groups * 42 + (rem > 0 ? rem * 8 + 8 : 0))}
-        height={38}
-        viewBox={`0 0 ${Math.max(32, groups * 42 + (rem > 0 ? rem * 8 + 8 : 0))} 38`}
+        width={totalWidth}
+        height={42}
+        viewBox={`0 0 ${totalWidth} 42`}
         className="overflow-visible"
+        style={{ filter: `drop-shadow(0 0 7px ${glow}) drop-shadow(0 2px 3px rgba(0,0,0,0.95))` }}
       >
         {Array.from({ length: groups }).map((_, g) => {
-          const ox = g * 42;
+          const ox = g * 48;
           return (
-            <g key={g} stroke={accent} strokeWidth="3.2" strokeLinecap="round">
-              <line x1={ox + 4} y1={5} x2={ox + 3} y2={33} />
-              <line x1={ox + 12} y1={4} x2={ox + 11} y2={34} />
-              <line x1={ox + 20} y1={5} x2={ox + 19} y2={33} />
-              <line x1={ox + 28} y1={4} x2={ox + 27} y2={34} />
-              <line x1={ox + 1} y1={28} x2={ox + 33} y2={9} strokeWidth="3.4" />
+            <g key={g} fill="none" strokeLinecap="round">
+              {/* Soft chalk smear underlay */}
+              <g stroke={accent} strokeOpacity="0.28" strokeWidth="6.2" transform={`translate(${ox}, 2)`}>
+                {SLASH_PATHS.map((d, i) => (
+                  <path key={`u-${i}`} d={d} />
+                ))}
+                <path d="M 0 31 Q 17 19 36 8" strokeWidth="6.6" />
+              </g>
+              {/* Crisp jagged primary scratches */}
+              <g stroke={accent} strokeWidth="3.3" transform={`translate(${ox}, 2)`}>
+                {SLASH_PATHS.map((d, i) => (
+                  <path key={`p-${i}`} d={d} />
+                ))}
+                <path d="M 0 31 Q 17 19 36 8" strokeWidth="3.6" />
+              </g>
             </g>
           );
         })}
         {Array.from({ length: rem }).map((_, r) => {
-          const ox = groups * 42 + r * 9;
+          const ox = groups * 48 + r * 9.5;
+          const d = SLASH_PATHS[r % SLASH_PATHS.length]!;
           return (
-            <line
-              key={r}
-              x1={ox + 4}
-              y1={5 + (r % 2)}
-              x2={ox + 3}
-              y2={33 - (r % 2)}
-              stroke={accent}
-              strokeWidth="3.2"
-              strokeLinecap="round"
-            />
+            <g key={r} fill="none" strokeLinecap="round" transform={`translate(${ox}, 2)`}>
+              <path d={d} stroke={accent} strokeOpacity="0.28" strokeWidth="6.2" />
+              <path d={d} stroke={accent} strokeWidth="3.3" />
+            </g>
           );
         })}
       </svg>
-      <span className="font-mono-tabular text-xs text-[#9c9688]">R{round}</span>
+      <span className="font-mono-tabular text-[11px] uppercase tracking-widest text-[#b5afa0] pb-1">
+        {isHoundRound ? `Feral R${round}` : `R${round}`}
+      </span>
     </div>
   );
 }
+

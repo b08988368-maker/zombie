@@ -47,6 +47,8 @@ export class PlayerController {
   private eyeOffset: number = BALANCE.player.eyeHeight;
   private bobTimer = 0;
   private stepAccum = 0;
+  private hitGraceTimer = 0;
+  private sprintFireCancelTimer = 0;
 
   public meleeCooldown = 0;
   public knifeAnimTimer = 0;
@@ -93,7 +95,14 @@ export class PlayerController {
     this.eyeOffset = BALANCE.player.eyeHeight;
     this.bobTimer = 0;
     this.stepAccum = 0;
+    this.hitGraceTimer = 0;
+    this.sprintFireCancelTimer = 0;
     this.grenades = BALANCE.player.grenadesStart;
+  }
+
+  public triggerSprintFireCancel(): void {
+    this.sprintFireCancelTimer = 0.25;
+    this.isSprinting = false;
   }
 
   public applyLookDelta(dx: number, dy: number, settings: GameSettings, adsSensScale: number): void {
@@ -129,11 +138,12 @@ export class PlayerController {
     onConsumeSecondWind: () => void,
     onDeath: () => void,
   ): void {
-    if (this.isReviving) return;
+    if (this.isReviving || this.hitGraceTimer > 0) return;
+    this.hitGraceTimer = BALANCE.player.hitGraceSeconds;
     this.health = Math.max(0, this.health - amount);
     this.timeSinceDamage = 0;
     this.damageFlash = 1.0;
-    this.cameraShake = Math.min(0.1, this.cameraShake + 0.045);
+    this.cameraShake = Math.min(0.08, this.cameraShake + 0.032);
 
     const dx = attackerX - this.position.x;
     const dz = attackerZ - this.position.z;
@@ -195,6 +205,8 @@ export class PlayerController {
     this.meleeCooldown = Math.max(0, this.meleeCooldown - dt);
     this.knifeAnimTimer = Math.max(0, this.knifeAnimTimer - dt);
     this.drinkAnimTimer = Math.max(0, this.drinkAnimTimer - dt);
+    this.hitGraceTimer = Math.max(0, this.hitGraceTimer - dt);
+    this.sprintFireCancelTimer = Math.max(0, this.sprintFireCancelTimer - dt);
 
     // Recoil recovery
     const recDecay = 1 - Math.exp(-14 * dt);
@@ -202,17 +214,18 @@ export class PlayerController {
     this.recoilYaw *= 1 - recDecay;
     this.cameraShake = Math.max(0, this.cameraShake - dt * 0.24);
 
-    // Movement state
+    // Movement state (allow forward + diagonal/strafe sprinting, instant ADS/fire cancel)
     this.isCrouching = input.crouch;
     const moving = input.forward || input.backward || input.left || input.right;
     this.isAds = input.ads && !this.isReviving;
     this.isSprinting =
       input.sprint &&
-      input.forward &&
+      moving &&
+      !input.backward &&
       !this.isCrouching &&
       !this.isAds &&
       !this.isReviving &&
-      moving;
+      this.sprintFireCancelTimer <= 0;
 
     const hasMarathon = perks.has('marathon');
     let maxSpeed = BALANCE.player.walkSpeed;
@@ -319,7 +332,7 @@ export class PlayerController {
     const desiredFov = this.isAds
       ? Math.min(settings.fov, targetAdsFov)
       : this.isSprinting
-        ? settings.fov + 4
+        ? settings.fov + 6
         : settings.fov;
     if (Math.abs(camera.fov - desiredFov) > 0.05) {
       camera.fov = THREE.MathUtils.damp(camera.fov, desiredFov, 14, dt);

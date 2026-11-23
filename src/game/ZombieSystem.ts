@@ -106,6 +106,10 @@ interface ZombieEntity {
   bloaterCystsGroup: THREE.Group;
   fungalGrowthMesh: THREE.Mesh;
   eyesMesh: THREE.Mesh;
+  eyeHalos: [THREE.Sprite, THREE.Sprite];
+  houndEyeHalos: [THREE.Sprite, THREE.Sprite];
+  headStumpMesh: THREE.Mesh;
+  headPopped: boolean;
   bloodWoundMesh: THREE.Mesh;
   hitboxMeshes: THREE.Mesh[];
   baseMaterials: [
@@ -131,6 +135,7 @@ interface ZombieEntity {
   };
   animPhase: number;
   spawnFogTimer: number;
+  spawnRiseTimer: number;
   spawnFogRing: THREE.Mesh;
 }
 
@@ -171,7 +176,7 @@ export class ZombieSystem {
   private readonly houndLegGeo = ZombieSystem.buildHoundLegGeo();
   private readonly houndEyesGeo = ZombieSystem.buildHoundEyesGeo();
 
-  private readonly headProxyGeo = new THREE.SphereGeometry(0.195, 8, 6);
+  private readonly headProxyGeo = new THREE.SphereGeometry(0.25, 8, 6);
   private readonly headProxyMat = new THREE.MeshBasicMaterial({
     transparent: true,
     opacity: 0,
@@ -518,6 +523,28 @@ export class ZombieSystem {
       const eyesMesh = new THREE.Mesh(this.eyesGeo, this.eyeMat);
       headMesh.add(eyesMesh);
 
+      const eyeHalos = ([-0.052, 0.052] as const).map((ex) => {
+        const sp = new THREE.Sprite(
+          new THREE.SpriteMaterial({
+            map: this.mats.eyeGlowTex,
+            color: 0xfbbf24,
+            transparent: true,
+            opacity: 0.9,
+            depthWrite: false,
+            blending: THREE.AdditiveBlending,
+          }),
+        );
+        sp.position.set(ex, 0.025, 0.144);
+        sp.scale.set(0.14, 0.14, 1);
+        headMesh.add(sp);
+        return sp;
+      }) as [THREE.Sprite, THREE.Sprite];
+
+      const headStumpMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.068, 0.082, 0.09, 8), bloodMat);
+      headStumpMesh.position.set(0, 0.72, 0.02);
+      headStumpMesh.visible = false;
+      torsoPivot.add(headStumpMesh);
+
       // Brute armored pauldrons & chest plate + glowing back weakpoint canister
       const bruteGearGroup = new THREE.Group();
       bruteGearGroup.visible = false;
@@ -643,6 +670,22 @@ export class ZombieSystem {
       hHeadMesh.userData = { poolIdx: i, hitZone: 'head' as HitZone };
       const hEyes = new THREE.Mesh(this.houndEyesGeo, this.houndEyeMat);
       houndHead.add(hHeadMesh, hEyes);
+      const houndEyeHalos = ([-0.055, 0.055] as const).map((ex) => {
+        const sp = new THREE.Sprite(
+          new THREE.SpriteMaterial({
+            map: this.mats.eyeGlowTex,
+            color: 0xef4444,
+            transparent: true,
+            opacity: 0.95,
+            depthWrite: false,
+            blending: THREE.AdditiveBlending,
+          }),
+        );
+        sp.position.set(ex, 0.035, 0.118);
+        sp.scale.set(0.15, 0.15, 1);
+        houndHead.add(sp);
+        return sp;
+      }) as [THREE.Sprite, THREE.Sprite];
       houndGroup.add(houndHead);
 
       const houndLegCoords = [
@@ -757,6 +800,10 @@ export class ZombieSystem {
         bloaterCystsGroup,
         fungalGrowthMesh,
         eyesMesh,
+        eyeHalos,
+        houndEyeHalos,
+        headStumpMesh,
+        headPopped: false,
         bloodWoundMesh,
         hitboxMeshes,
         baseMaterials: [skinMat, clothMat, pantsMat, bloodMat],
@@ -765,11 +812,12 @@ export class ZombieSystem {
           skinMeshes: [headMesh, laMesh, lfaMesh, raMesh, rfaMesh],
           clothMeshes: [torsoMesh, laSleeve, raSleeve],
           pantsMeshes: [llMesh, lsMesh, rlMesh, rsMesh],
-          bloodMeshes: [chestBlood, bloodWoundMesh],
+          bloodMeshes: [chestBlood, bloodWoundMesh, headStumpMesh],
           houndMeshes: [hBody, hHeadMesh, ...(houndLegs.map((lg) => lg.children[0] as THREE.Mesh))],
         },
         animPhase: i * 1.13,
         spawnFogTimer: 0,
+        spawnRiseTimer: 0,
         spawnFogRing,
       });
     }
@@ -903,6 +951,9 @@ export class ZombieSystem {
     // Reset rig transforms
     slot.leftLeg.visible = true;
     slot.rightLeg.visible = true;
+    slot.headMesh.visible = true;
+    slot.headStumpMesh.visible = false;
+    slot.headPopped = false;
     slot.bloodWoundMesh.visible = false;
     slot.contactShadow.visible = true;
     slot.bodyGroup.position.set(0, 0, 0);
@@ -922,6 +973,7 @@ export class ZombieSystem {
       slot.weakPointMesh.visible = false;
       slot.root.scale.set(1.0, 1.0, 1.0);
       slot.spawnFogTimer = 0.75;
+      slot.spawnRiseTimer = 0;
       slot.spawnFogRing.visible = true;
       slot.baseMaterials[0] = this.houndSkinMat;
       this.applyHoundMaterial(slot, this.houndSkinMat);
@@ -929,6 +981,7 @@ export class ZombieSystem {
       slot.humanoidGroup.visible = true;
       slot.houndGroup.visible = false;
       slot.spawnFogTimer = 0;
+      slot.spawnRiseTimer = spawnPoint.windowId ? 0 : 0.45;
       slot.spawnFogRing.visible = false;
 
       slot.weakPointMesh.visible = type === 'brute';
@@ -941,11 +994,17 @@ export class ZombieSystem {
         slot.baseMaterials[0] = this.bloaterSkinMat;
         slot.baseMaterials[1] = this.bloaterClothMat;
         slot.eyesMesh.material = this.bloaterEyeMat;
+        for (const sp of slot.eyeHalos) {
+          (sp.material as THREE.SpriteMaterial).color.setHex(0xa3e635);
+        }
       } else if (type === 'brute') {
         slot.root.scale.set(1.38, 1.36, 1.36);
         slot.baseMaterials[0] = this.bruteSkinMat;
         slot.baseMaterials[1] = this.bruteArmorMat;
         slot.eyesMesh.material = this.houndEyeMat;
+        for (const sp of slot.eyeHalos) {
+          (sp.material as THREE.SpriteMaterial).color.setHex(0xef4444);
+        }
       } else {
         const skinVar = (slot.id + Math.floor(rng.next() * 3)) % this.mats.zombieSkins.length;
         const clothVar = (slot.id + Math.floor(rng.next() * 6)) % this.mats.zombieCloths.length;
@@ -954,6 +1013,9 @@ export class ZombieSystem {
         slot.baseMaterials[0] = this.mats.zombieSkins[skinVar]!;
         slot.baseMaterials[1] = this.mats.zombieCloths[clothVar]!;
         slot.eyesMesh.material = this.eyeMat;
+        for (const sp of slot.eyeHalos) {
+          (sp.material as THREE.SpriteMaterial).color.setHex(0xfbbf24);
+        }
       }
       this.applyMaterialsToRig(slot, slot.baseMaterials);
     }
@@ -996,21 +1058,50 @@ export class ZombieSystem {
     this.raycaster.near = 0.02;
     this.raycaster.far = maxDistance;
     const hits = this.raycaster.intersectObjects(this.allHitboxes, false);
+    const validHits: {
+      poolIdx: number;
+      hitZone: HitZone;
+      point: THREE.Vector3;
+      normal: THREE.Vector3;
+      distance: number;
+    }[] = [];
+
     for (const h of hits) {
       const poolIdx = h.object.userData.poolIdx as number | undefined;
       if (poolIdx === undefined) continue;
       const ent = this.entities[poolIdx];
       if (!ent || !ent.active || ent.state === 'dying' || ent.state === 'dead') continue;
       if (!ZombieSystem.isVisibleInHierarchy(h.object)) continue;
-      return {
+      validHits.push({
         poolIdx,
         hitZone: (h.object.userData.hitZone as HitZone) ?? 'torso',
         point: h.point.clone(),
         normal: h.face ? h.face.normal.clone() : new THREE.Vector3(0, 1, 0),
         distance: h.distance,
-      };
+      });
     }
-    return null;
+
+    if (validHits.length === 0) return null;
+    const first = validHits[0]!;
+    if (first.hitZone !== 'limb') return first;
+
+    // Outstretched zombie arms must not shield torso, weakpoint, or headshots on the same zombie
+    const zonePriority: Record<HitZone, number> = {
+      head: 4,
+      back_weakpoint: 3,
+      torso: 2,
+      limb: 1,
+    };
+    let best = first;
+    for (let i = 1; i < validHits.length; i++) {
+      const cand = validHits[i]!;
+      if (cand.poolIdx !== first.poolIdx) break;
+      if (cand.distance - first.distance > 0.65) break;
+      if (zonePriority[cand.hitZone] > zonePriority[best.hitZone]) {
+        best = cand;
+      }
+    }
+    return best;
   }
 
   public raycastMeleeCone(
@@ -1111,6 +1202,11 @@ export class ZombieSystem {
     }
 
     if (e.health <= 0) {
+      if (hitZone === 'head' && e.type !== 'hound' && e.type !== 'brute') {
+        e.headPopped = true;
+        e.headMesh.visible = false;
+        e.headStumpMesh.visible = true;
+      }
       const wasBloater = e.type === 'bloater';
       this.killEntity(e);
       return {
@@ -1302,13 +1398,20 @@ export class ZombieSystem {
         }
       }
 
+      if (e.spawnRiseTimer > 0) {
+        e.spawnRiseTimer = Math.max(0, e.spawnRiseTimer - dt);
+      }
+
       if (e.state === 'dying') {
         e.stateTimer += dt;
-        const fallT = Math.min(1, e.stateTimer / 0.34);
+        const fallT = Math.min(1, e.stateTimer / 0.38);
         const ease = 1 - Math.pow(1 - fallT, 2);
         e.bodyGroup.rotation.x = THREE.MathUtils.lerp(0, -Math.PI * 0.48, ease);
         e.bodyGroup.rotation.z = THREE.MathUtils.lerp(0, e.deathFallRoll, ease);
         e.bodyGroup.position.y = THREE.MathUtils.lerp(0, e.type === 'hound' ? 0.14 : 0.22, ease);
+        e.torsoPivot.rotation.x = THREE.MathUtils.lerp(e.torsoPivot.rotation.x, 0.45, ease);
+        e.leftShin.rotation.x = THREE.MathUtils.lerp(e.leftShin.rotation.x, 0.85, ease);
+        e.rightShin.rotation.x = THREE.MathUtils.lerp(e.rightShin.rotation.x, 0.85, ease);
         e.leftArm.rotation.x = THREE.MathUtils.lerp(e.leftArm.rotation.x, -0.35, ease * 0.6);
         e.rightArm.rotation.x = THREE.MathUtils.lerp(e.rightArm.rotation.x, -0.25, ease * 0.6);
         e.contactShadow.visible = e.corpseTimer < 1.2;
@@ -1637,25 +1740,25 @@ export class ZombieSystem {
       return;
     }
 
-    // Torso hunch, lateral shamble sway & directional hit flinch
-    let torsoPitch = e.speedClass === 'sprint' ? 0.24 : e.speedClass === 'run' ? 0.14 : 0.09;
-    let torsoYaw = c * (e.speedClass === 'walk' ? 0.15 : 0.09);
-    const torsoRoll = s * (e.speedClass === 'walk' ? 0.085 : 0.045) + limpSide * 0.04;
+    // Deeper predatory torso hunch, dragging limp sway & directional hit flinch
+    let torsoPitch = e.speedClass === 'sprint' ? 0.34 : e.speedClass === 'run' ? 0.24 : 0.18;
+    let torsoYaw = c * (e.speedClass === 'walk' ? 0.18 : 0.11);
+    const torsoRoll = s * (e.speedClass === 'walk' ? 0.1 : 0.055) + limpSide * 0.06;
 
     if (e.hitReactTimer > 0) {
       const reactT = e.hitReactTimer / 0.26;
       const punch = Math.sin(reactT * Math.PI);
       if (e.hitReactZone === 'head') {
-        torsoPitch -= 0.22 * punch;
+        torsoPitch -= 0.24 * punch;
         e.headPivot.rotation.x = -0.62 * punch;
         e.headPivot.rotation.y = limpSide * 0.28 * punch;
       } else {
-        torsoPitch -= 0.18 * punch;
+        torsoPitch -= 0.2 * punch;
         torsoYaw += limpSide * 0.35 * punch;
         e.headPivot.rotation.x = -0.24 * punch;
       }
     } else if (e.state === 'brute_telegraph') {
-      e.torsoPivot.rotation.set(0.28, 0, 0);
+      e.torsoPivot.rotation.set(0.32, 0, 0);
       e.headPivot.rotation.set(-0.2, 0, 0);
       e.leftArm.rotation.x = -2.45;
       e.rightArm.rotation.x = -2.45;
@@ -1663,12 +1766,10 @@ export class ZombieSystem {
       e.rightForearm.rotation.x = -0.35;
       return;
     } else {
-      // Uncanny zombie head cock + micro-twitch
-      const twitch = Math.sin(e.animPhase * 2.1) * 0.08;
       e.headPivot.rotation.set(
-        0.1 + s * 0.06,
-        Math.sin(e.animPhase * 0.6) * 0.14,
-        limpSide * 0.16 + c * 0.09 + twitch,
+        -0.06 + s * 0.035,
+        Math.sin(e.animPhase * 0.6) * 0.07,
+        limpSide * 0.12 + c * 0.05,
       );
     }
 
@@ -1677,7 +1778,7 @@ export class ZombieSystem {
     if (e.state === 'attack') {
       const t = e.stateTimer * 10.5;
       const slash = Math.sin(t);
-      e.torsoPivot.rotation.x = 0.22 + slash * 0.24;
+      e.torsoPivot.rotation.x = 0.26 + slash * 0.26;
       e.leftArm.rotation.x = -1.75 + slash * 0.85;
       e.rightArm.rotation.x = -1.75 - slash * 0.85;
       e.leftForearm.rotation.x = -0.55 - Math.max(0, -slash) * 0.55;
@@ -1688,7 +1789,7 @@ export class ZombieSystem {
       e.rightShin.rotation.x = 0.15;
     } else if (e.state === 'tear_board') {
       const yank = Math.sin(e.stateTimer * 8.5);
-      e.torsoPivot.rotation.x = 0.12 - yank * 0.18;
+      e.torsoPivot.rotation.x = 0.12 - yank * 0.12;
       e.leftArm.rotation.x = -1.5 + yank * 0.65;
       e.rightArm.rotation.x = -1.5 - yank * 0.65;
       e.leftForearm.rotation.x = -0.75 + yank * 0.35;
@@ -1710,18 +1811,19 @@ export class ZombieSystem {
       e.rightShin.rotation.x = 1.05;
     } else {
       // Articulated knee-bend walk / sprint gait
-      const strideAmp = e.speedClass === 'sprint' ? 0.72 : e.speedClass === 'run' ? 0.58 : 0.44;
+      const strideAmp = e.speedClass === 'sprint' ? 0.76 : e.speedClass === 'run' ? 0.6 : 0.44;
       e.leftLeg.rotation.x = s * strideAmp;
-      e.rightLeg.rotation.x = -s * strideAmp * (e.speedClass === 'walk' ? 0.78 : 1.0);
-      e.leftShin.rotation.x = Math.max(0.08, -s * 0.72 + 0.18);
-      e.rightShin.rotation.x = Math.max(0.08, s * 0.72 + 0.18);
+      e.rightLeg.rotation.x = -s * strideAmp * (e.speedClass === 'walk' ? 0.72 : 1.0);
+      e.leftShin.rotation.x = Math.max(0.1, -s * 0.72 + 0.2);
+      e.rightShin.rotation.x = Math.max(0.1, s * 0.72 + 0.2);
 
-      // Reached out crooked forearms with predatory claw flex (low enough not to cover head)
-      e.leftArm.rotation.x = -0.82 + c * (e.speedClass === 'sprint' ? 0.48 : 0.24);
-      e.rightArm.rotation.x = -0.82 - c * (e.speedClass === 'sprint' ? 0.48 : 0.24);
-      e.leftForearm.rotation.x = -0.62 - Math.sin(e.animPhase + 0.6) * 0.22;
-      e.rightForearm.rotation.x = -0.62 + Math.sin(e.animPhase + 0.6) * 0.22;
-      e.bodyGroup.position.y = Math.abs(s) * (e.speedClass === 'sprint' ? 0.065 : 0.04);
+      // Reached out crooked asymmetric clawing arms
+      e.leftArm.rotation.x = -1.04 + c * (e.speedClass === 'sprint' ? 0.48 : 0.24);
+      e.rightArm.rotation.x = -0.92 - c * (e.speedClass === 'sprint' ? 0.48 : 0.24);
+      e.leftForearm.rotation.x = -0.68 - Math.sin(e.animPhase + 0.6) * 0.24;
+      e.rightForearm.rotation.x = -0.58 + Math.sin(e.animPhase + 0.6) * 0.24;
+      const riseOffset = e.spawnRiseTimer > 0 ? -(e.spawnRiseTimer / 0.45) * 0.95 : 0;
+      e.bodyGroup.position.y = Math.abs(s) * (e.speedClass === 'sprint' ? 0.065 : 0.04) + riseOffset;
     }
     void this.tmpVec;
   }

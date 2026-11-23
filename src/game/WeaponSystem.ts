@@ -98,24 +98,45 @@ interface WeaponSpec {
 }
 
 const WEAPON_SPECS: Record<WeaponId, WeaponSpec> = {
-  service_pistol: { len: 0.24, height: 0.115, width: 0.038, hasStock: false, hasDrum: false, isLong: false, wood: false },
-  hedgerow: { len: 0.72, height: 0.11, width: 0.052, hasStock: true, hasDrum: false, isLong: true, wood: true },
-  rattler: { len: 0.44, height: 0.128, width: 0.048, hasStock: false, hasDrum: false, isLong: false, wood: false },
-  ironsight: { len: 0.64, height: 0.128, width: 0.05, hasStock: true, hasDrum: false, isLong: true, wood: false },
-  longbow: { len: 0.84, height: 0.118, width: 0.048, hasStock: true, hasDrum: false, isLong: true, wood: true },
-  hammerfall: { len: 0.76, height: 0.155, width: 0.068, hasStock: true, hasDrum: true, isLong: true, wood: false },
-  phase_cannon: { len: 0.56, height: 0.145, width: 0.074, hasStock: false, hasDrum: false, isLong: false, wood: false, isPhase: true },
+  service_pistol: { len: 0.25, height: 0.088, width: 0.031, hasStock: false, hasDrum: false, isLong: false, wood: false },
+  hedgerow: { len: 0.72, height: 0.095, width: 0.046, hasStock: true, hasDrum: false, isLong: true, wood: true },
+  rattler: { len: 0.45, height: 0.105, width: 0.042, hasStock: false, hasDrum: false, isLong: false, wood: false },
+  ironsight: { len: 0.66, height: 0.108, width: 0.044, hasStock: true, hasDrum: false, isLong: true, wood: false },
+  longbow: { len: 0.84, height: 0.098, width: 0.042, hasStock: true, hasDrum: false, isLong: true, wood: true },
+  hammerfall: { len: 0.78, height: 0.128, width: 0.06, hasStock: true, hasDrum: true, isLong: true, wood: false },
+  phase_cannon: { len: 0.56, height: 0.122, width: 0.064, hasStock: false, hasDrum: false, isLong: false, wood: false, isPhase: true },
 };
 
 const ADS_EYE_Y: Record<WeaponId, number> = {
-  service_pistol: -0.082,
-  hedgerow: -0.08,
-  rattler: -0.09,
-  ironsight: -0.09,
-  longbow: -0.104,
-  hammerfall: -0.106,
-  phase_cannon: -0.102,
+  service_pistol: -0.056,
+  hedgerow: -0.062,
+  rattler: -0.084,
+  ironsight: -0.086,
+  longbow: -0.09,
+  hammerfall: -0.098,
+  phase_cannon: -0.088,
 };
+
+function createChamferedBoxGeo(w: number, h: number, d: number, bevel = 0.0028): THREE.ExtrudeGeometry {
+  const hw = Math.max(0.004, w * 0.5 - bevel);
+  const hh = Math.max(0.004, h * 0.5 - bevel);
+  const shape = new THREE.Shape();
+  shape.moveTo(-hw, -hh);
+  shape.lineTo(hw, -hh);
+  shape.lineTo(hw * 0.94, hh);
+  shape.lineTo(-hw * 0.94, hh);
+  shape.closePath();
+  const geo = new THREE.ExtrudeGeometry(shape, {
+    depth: Math.max(0.01, d - bevel * 2),
+    bevelEnabled: true,
+    bevelThickness: bevel,
+    bevelSize: bevel,
+    bevelSegments: 2,
+    curveSegments: 2,
+  });
+  geo.center();
+  return geo;
+}
 
 function createGlovedHand(
   gloveMat: THREE.Material,
@@ -172,6 +193,7 @@ export class WeaponSystem {
   public reloadDuration = 1.5;
 
   private fireCooldown = 0;
+  private fireBufferTimer = 0;
   private swapTimer = 0;
   private semiTriggerConsumed = false;
   private reloadCueInPlayed = false;
@@ -218,6 +240,7 @@ export class WeaponSystem {
   private lookSwayY = 0;
   private swayX = 0;
   private swayY = 0;
+  private sprintBlend = 0;
   private bobPhase = 0;
   private muzzleFlashTimer = 0;
 
@@ -230,6 +253,7 @@ export class WeaponSystem {
   private readonly mats: PbrMaterialSet;
 
   private readonly tmpOrigin = new THREE.Vector3();
+  private readonly tmpMuzzlePos = new THREE.Vector3();
   private readonly tmpDir = new THREE.Vector3();
   private readonly tmpVec = new THREE.Vector3();
   private readonly tmpRight = new THREE.Vector3();
@@ -302,7 +326,7 @@ export class WeaponSystem {
     // Lower receiver / frame + side bevel plates + flared magwell
     const recMat = spec.isPhase ? mats.gunMetal : mats.gunPolymer;
     const receiver = new THREE.Mesh(
-      new THREE.BoxGeometry(spec.width, recH, spec.len * 0.54),
+      createChamferedBoxGeo(spec.width, recH, spec.len * 0.54, 0.0024),
       recMat,
     );
     receiver.position.set(0, recY, -spec.len * 0.22);
@@ -311,10 +335,10 @@ export class WeaponSystem {
     // Side bevel cheeks for faceted mechanical silhouette
     for (const side of [-1, 1]) {
       const cheek = new THREE.Mesh(
-        new THREE.BoxGeometry(0.005, recH * 0.68, spec.len * 0.42),
+        new THREE.BoxGeometry(0.0045, recH * 0.65, spec.len * 0.44),
         mats.darkTrim,
       );
-      cheek.position.set(side * (spec.width * 0.5 + 0.0015), recY + 0.002, -spec.len * 0.22);
+      cheek.position.set(side * (spec.width * 0.5 + 0.0012), recY + 0.002, -spec.len * 0.22);
       g.add(cheek);
     }
 
@@ -325,7 +349,7 @@ export class WeaponSystem {
     g.add(slideGroup);
 
     const upperShell = new THREE.Mesh(
-      new THREE.BoxGeometry(spec.width * 0.9, recH * 0.62, spec.len * 0.56),
+      createChamferedBoxGeo(spec.width * 0.88, recH * 0.64, spec.len * 0.58, 0.0028),
       mats.gunMetal,
     );
     slideGroup.add(upperShell);
@@ -333,10 +357,10 @@ export class WeaponSystem {
     // Top Picatinny rail notches
     if (id !== 'hedgerow' && id !== 'service_pistol') {
       const railBar = new THREE.Mesh(
-        new THREE.BoxGeometry(spec.width * 0.56, 0.007, spec.len * 0.44),
+        new THREE.BoxGeometry(spec.width * 0.54, 0.006, spec.len * 0.44),
         mats.darkTrim,
       );
-      railBar.position.y = recH * 0.34;
+      railBar.position.y = recH * 0.35;
       slideGroup.add(railBar);
     }
 
@@ -345,42 +369,46 @@ export class WeaponSystem {
       new THREE.BoxGeometry(0.005, recH * 0.34, spec.len * 0.14),
       mats.brushedSteel,
     );
-    boltPort.position.set(spec.width * 0.45, 0, 0.02);
+    boltPort.position.set(spec.width * 0.44, 0, 0.02);
 
     if (id === 'service_pistol') {
       slideGroup.name = 'weapon_slide';
       slideGroup.add(boltPort);
-      // Rear slide serration ribs
-      for (let i = 0; i < 4; i++) {
-        const ser = new THREE.Mesh(new THREE.BoxGeometry(spec.width * 0.94, recH * 0.42, 0.004), mats.darkTrim);
-        ser.position.set(0, 0, spec.len * 0.22 - i * 0.01);
+      // Rear & front slide serration ribs
+      for (let i = 0; i < 5; i++) {
+        const ser = new THREE.Mesh(new THREE.BoxGeometry(spec.width * 0.92, recH * 0.44, 0.0035), mats.darkTrim);
+        ser.position.set(0, 0, spec.len * 0.23 - i * 0.0085);
         slideGroup.add(ser);
       }
-      // Tritium sights mounted on moving pistol slide
-      const rearSight = new THREE.Mesh(new THREE.BoxGeometry(0.024, 0.014, 0.015), mats.gunMetal);
+      // Underbarrel picatinny tactical rail + crisp tritium sights
+      const underRail = new THREE.Mesh(new THREE.BoxGeometry(spec.width * 0.68, 0.009, 0.055), mats.darkTrim);
+      underRail.position.set(0, recY - recH * 0.52, -spec.len * 0.42);
+      g.add(underRail);
+
+      const rearSight = new THREE.Mesh(new THREE.BoxGeometry(0.022, 0.012, 0.014), mats.gunMetal);
       rearSight.position.set(0, recH * 0.38, spec.len * 0.22);
-      const frontPost = new THREE.Mesh(new THREE.BoxGeometry(0.007, 0.015, 0.012), mats.gunMetal);
+      const frontPost = new THREE.Mesh(new THREE.BoxGeometry(0.006, 0.013, 0.011), mats.gunMetal);
       frontPost.position.set(0, recH * 0.38, -spec.len * 0.25);
       const frontDot = new THREE.Mesh(new THREE.BoxGeometry(0.004, 0.004, 0.004), tritiumMat);
       frontDot.position.set(0, recH * 0.43, -spec.len * 0.244);
       const rearDotL = new THREE.Mesh(new THREE.BoxGeometry(0.003, 0.004, 0.004), tritiumMat);
-      rearDotL.position.set(-0.007, recH * 0.42, spec.len * 0.228);
+      rearDotL.position.set(-0.006, recH * 0.42, spec.len * 0.228);
       const rearDotR = rearDotL.clone();
-      rearDotR.position.x = 0.007;
+      rearDotR.position.x = 0.006;
       slideGroup.add(rearSight, frontPost, frontDot, rearDotL, rearDotR);
     } else {
       // Stationary upper receiver; bolt carrier + charging handle reciprocates as weapon_slide!
       const boltCarrier = new THREE.Group();
       boltCarrier.name = 'weapon_slide';
       boltCarrier.position.set(0, slideY, -spec.len * 0.22);
-      boltPort.position.set(spec.width * 0.46, 0, 0);
+      boltPort.position.set(spec.width * 0.45, 0, 0);
       boltCarrier.add(boltPort);
       const handleKnob = new THREE.Mesh(
         new THREE.CylinderGeometry(0.007, 0.007, 0.026, 8),
         mats.brushedSteel,
       );
       handleKnob.rotation.z = Math.PI / 2;
-      handleKnob.position.set(spec.width * 0.56, 0.004, 0.02);
+      handleKnob.position.set(spec.width * 0.55, 0.004, 0.02);
       boltCarrier.add(handleKnob);
       g.add(boltCarrier);
     }
@@ -604,6 +632,34 @@ export class WeaponSystem {
         railFin.position.set(side * (spec.width * 0.56), slideY, -0.34);
         g.add(railFin);
       }
+    } else if (id === 'rattler' || id === 'ironsight' || id === 'hammerfall') {
+      // Open-frame tactical Red-Dot Reflex Optic calibrated to ADS_EYE_Y
+      const opticZ = -spec.len * 0.24;
+      const opticBase = new THREE.Mesh(new THREE.BoxGeometry(0.026, 0.008, 0.046), mats.gunMetal);
+      opticBase.position.set(0, slideTopY + 0.005, opticZ);
+      const frameL = new THREE.Mesh(new THREE.BoxGeometry(0.004, 0.028, 0.016), mats.darkTrim);
+      frameL.position.set(-0.014, slideTopY + 0.022, opticZ);
+      const frameR = frameL.clone();
+      frameR.position.x = 0.014;
+      const frameTop = new THREE.Mesh(new THREE.BoxGeometry(0.032, 0.004, 0.016), mats.darkTrim);
+      frameTop.position.set(0, slideTopY + 0.036, opticZ);
+      const lens = new THREE.Mesh(
+        new THREE.PlaneGeometry(0.024, 0.024),
+        new THREE.MeshBasicMaterial({
+          color: 0x38bdf8,
+          transparent: true,
+          opacity: 0.14,
+          side: THREE.DoubleSide,
+          depthWrite: false,
+        }),
+      );
+      lens.position.set(0, slideTopY + 0.024, opticZ);
+      const redDot = new THREE.Mesh(
+        new THREE.SphereGeometry(0.002, 8, 8),
+        new THREE.MeshBasicMaterial({ color: 0xff2a2a }),
+      );
+      redDot.position.set(0, slideTopY + 0.026, opticZ + 0.002);
+      g.add(opticBase, frameL, frameR, frameTop, lens, redDot);
     } else if (id !== 'service_pistol') {
       const rearSight = new THREE.Mesh(new THREE.BoxGeometry(0.024, 0.014, 0.016), mats.gunMetal);
       rearSight.position.set(0, slideTopY + 0.007, -spec.len * 0.02);
@@ -620,15 +676,25 @@ export class WeaponSystem {
       g.add(frontDot, rearDotL, rearDotR);
     }
 
-    // Overclock emissive rail
-    const ocAccent = new THREE.Mesh(
-      new THREE.BoxGeometry(spec.width + 0.006, 0.009, spec.len * 0.42),
+    // Overclock dual neon energy rails & glowing muzzle collar
+    const ocGroup = new THREE.Group();
+    ocGroup.name = 'overclock_accent';
+    ocGroup.visible = false;
+    for (const side of [-1, 1]) {
+      const rail = new THREE.Mesh(
+        new THREE.BoxGeometry(0.004, 0.008, spec.len * 0.46),
+        accentMat,
+      );
+      rail.position.set(side * (spec.width * 0.5 + 0.003), slideTopY - 0.004, -spec.len * 0.25);
+      ocGroup.add(rail);
+    }
+    const ocRing = new THREE.Mesh(
+      new THREE.TorusGeometry(spec.width * 0.34, 0.0035, 6, 14),
       accentMat,
     );
-    ocAccent.name = 'overclock_accent';
-    ocAccent.position.set(0, slideTopY + 0.002, -spec.len * 0.24);
-    ocAccent.visible = false;
-    g.add(ocAccent);
+    ocRing.position.set(0, slideY - 0.004, -spec.len * 0.82);
+    ocGroup.add(ocRing);
+    g.add(ocGroup);
 
     return g;
   }
@@ -639,6 +705,7 @@ export class WeaponSystem {
     this.isReloading = false;
     this.reloadTimer = 0;
     this.fireCooldown = 0;
+    this.fireBufferTimer = 0;
     this.swapTimer = 0;
     this.inspectTimer = 0;
     this.slideKick = 0;
@@ -648,6 +715,7 @@ export class WeaponSystem {
     this.recoilOffsetZ = 0;
     this.recoilOffsetPitch = 0;
     this.recoilBloom = 0;
+    this.sprintBlend = 0;
     this.activeGrenades.forEach((g) => {
       this.scene.remove(g.mesh);
       this.physics.removeGrenadeBody(g.rb.id);
@@ -760,7 +828,7 @@ export class WeaponSystem {
     const active = this.getActiveWeapon();
     for (const [id, grp] of this.weaponModels) {
       grp.visible = id === active.id;
-      const accent = grp.getObjectByName('overclock_accent') as THREE.Mesh | undefined;
+      const accent = grp.getObjectByName('overclock_accent');
       if (accent) {
         accent.visible = active.upgraded;
       }
@@ -1179,6 +1247,10 @@ export class WeaponSystem {
     callbacks: ShotCallbacks,
   ): void {
     this.fireCooldown = Math.max(0, this.fireCooldown - dt);
+    this.fireBufferTimer = Math.max(0, this.fireBufferTimer - dt);
+    if (input.firePressed) {
+      this.fireBufferTimer = 0.18;
+    }
     this.swapTimer = Math.max(0, this.swapTimer - dt);
     this.muzzleFlashTimer = Math.max(0, this.muzzleFlashTimer - dt);
     this.pumpTimer = Math.max(0, this.pumpTimer - dt);
@@ -1206,6 +1278,7 @@ export class WeaponSystem {
     if (input.swapPressed && this.slots.length > 1 && this.swapTimer <= 0 && !player.isReviving) {
       this.activeSlot = (this.activeSlot + 1) % this.slots.length;
       this.isReloading = false;
+      this.fireBufferTimer = 0;
       this.inspectTimer = 0;
       this.pumpTimer = 0;
       const nextCfg = this.getActiveConfig();
@@ -1309,17 +1382,20 @@ export class WeaponSystem {
     const canFireMode =
       cfg.fireMode === 'auto'
         ? input.fireHeld
-        : input.firePressed || (input.fireHeld && !this.semiTriggerConsumed);
+        : this.fireBufferTimer > 0 || (input.fireHeld && !this.semiTriggerConsumed);
 
     if (
       canFireMode &&
       !this.isReloading &&
       this.swapTimer <= 0 &&
       this.fireCooldown <= 0 &&
-      !player.isSprinting &&
       !player.isReviving &&
       player.drinkAnimTimer <= 0
     ) {
+      this.fireBufferTimer = 0;
+      if (player.isSprinting) {
+        player.triggerSprintFireCancel();
+      }
       if (cfg.fireMode !== 'auto') {
         this.semiTriggerConsumed = true;
       }
@@ -1367,13 +1443,13 @@ export class WeaponSystem {
 
     this.audio.playGunshot(active.id, active.upgraded);
     player.addRecoil(
-      cfg.recoilPitch * (player.isAds ? 0.68 : 1.0),
-      (Math.random() - 0.5) * cfg.recoilYaw * 2,
-      cfg.cameraKick,
+      cfg.recoilPitch * (player.isAds ? 0.52 : 1.0),
+      (Math.random() - 0.5) * cfg.recoilYaw * (player.isAds ? 1.2 : 2.0),
+      cfg.cameraKick * (player.isAds ? 0.65 : 1.0),
     );
-    this.recoilOffsetZ = Math.min(0.092, this.recoilOffsetZ + 0.06);
-    this.recoilOffsetPitch = Math.min(0.28, this.recoilOffsetPitch + 0.135);
-    this.recoilBloom = Math.min(0.75, this.recoilBloom + (player.isAds ? 0.14 : 0.28));
+    this.recoilOffsetZ = Math.min(0.085, this.recoilOffsetZ + (player.isAds ? 0.038 : 0.06));
+    this.recoilOffsetPitch = Math.min(0.24, this.recoilOffsetPitch + (player.isAds ? 0.085 : 0.135));
+    this.recoilBloom = Math.min(0.65, this.recoilBloom + (player.isAds ? 0.08 : 0.22));
     this.slideKick = 0.044;
     if (active.id === 'hedgerow') {
       this.pumpTimer = Math.min(0.55, this.fireCooldown * 0.85);
@@ -1427,6 +1503,14 @@ export class WeaponSystem {
       return;
     }
 
+    // Compute world muzzle position so tracers visibly streak from the barrel crown
+    const activeMuzzle = this.muzzleSprites.get(active.id);
+    if (activeMuzzle) {
+      activeMuzzle.getWorldPosition(this.tmpMuzzlePos);
+    } else {
+      this.tmpMuzzlePos.copy(this.tmpOrigin).addScaledVector(this.tmpDir, 0.65);
+    }
+
     // Hitscan pellets
     const spread = player.isAds ? cfg.spreadAds : cfg.spreadHip;
     const baseDamage =
@@ -1467,7 +1551,18 @@ export class WeaponSystem {
         );
 
         const isHeadHit = zHit.hitZone === 'head';
-        this.spawnParticles(zHit.point, isHeadHit ? 0xb91c1c : 0x8b1111, isHeadHit ? 14 : 7, isHeadHit ? 3.8 : 2.8);
+        if (isHeadHit && res.killed) {
+          // Dramatic COD headshot arterial splatter + bone shards
+          this.spawnParticles(zHit.point, 0x991b1b, 16, 4.6);
+          this.spawnParticles(zHit.point, 0xd9ccb8, 4, 3.6);
+        } else {
+          this.spawnParticles(
+            zHit.point,
+            isHeadHit ? 0xb91c1c : 0x8b1111,
+            isHeadHit ? 12 : 7,
+            isHeadHit ? 3.8 : 2.8,
+          );
+        }
         if (isHeadHit) anyHeadshot = true;
 
         if (res.killed) {
@@ -1487,7 +1582,7 @@ export class WeaponSystem {
 
         if (cfg.hasTracer && p === 0) {
           this.spawnTracer(
-            this.tmpOrigin,
+            this.tmpMuzzlePos,
             zHit.point,
             active.upgraded ? cfg.upgradedTracerColor : cfg.tracerColor,
           );
@@ -1498,7 +1593,7 @@ export class WeaponSystem {
         this.audio.playSurfaceImpact(worldHit.surface, worldHit.point.x, worldHit.point.y, worldHit.point.z);
         if (cfg.hasTracer && p === 0) {
           this.spawnTracer(
-            this.tmpOrigin,
+            this.tmpMuzzlePos,
             worldHit.point,
             active.upgraded ? cfg.upgradedTracerColor : cfg.tracerColor,
           );
@@ -1506,7 +1601,7 @@ export class WeaponSystem {
       } else if (cfg.hasTracer && p === 0) {
         const end = this.tmpOrigin.clone().addScaledVector(shotDir, 60);
         this.spawnTracer(
-          this.tmpOrigin,
+          this.tmpMuzzlePos,
           end,
           active.upgraded ? cfg.upgradedTracerColor : cfg.tracerColor,
         );
@@ -1601,9 +1696,9 @@ export class WeaponSystem {
     const activeId = this.getActiveWeapon().id;
     const adsAlpha = player.isAds ? 1 : 0;
     const adsY = ADS_EYE_Y[cfg.id];
-    const targetX = THREE.MathUtils.lerp(0.195, 0.0, adsAlpha);
-    const targetY = THREE.MathUtils.lerp(-0.17, adsY, adsAlpha);
-    const targetZ = THREE.MathUtils.lerp(-0.335, -0.245, adsAlpha) + this.recoilOffsetZ + wallPushback;
+    const targetX = THREE.MathUtils.lerp(0.168, 0.0, adsAlpha);
+    const targetY = THREE.MathUtils.lerp(-0.142, adsY, adsAlpha);
+    const targetZ = THREE.MathUtils.lerp(-0.315, -0.238, adsAlpha) + this.recoilOffsetZ + wallPushback;
 
     const horizSpeed = Math.hypot(player.velocity.x, player.velocity.z);
     const moveAmt = Math.min(1, horizSpeed / 5);
@@ -1611,18 +1706,19 @@ export class WeaponSystem {
     const cadence = player.isSprinting ? 13.5 : 8.2;
     this.bobPhase += dt * cadence * (0.25 + moveAmt * 0.75);
 
-    // Subtle idle breathing + crisp locomotion sway
-    const idleX = Math.sin(tNow * 1.4) * 0.0022 * (1 - adsAlpha * 0.8);
-    const idleY = Math.cos(tNow * 2.1) * 0.0022 * (1 - adsAlpha * 0.8);
-    const bobAmp = player.isSprinting ? 0.017 : 0.0085;
+    // Subtle idle breathing + crisp locomotion sway (rock-steady when ADS)
+    const adsSteadiness = 1 - adsAlpha * 0.9;
+    const idleX = Math.sin(tNow * 1.4) * 0.002 * adsSteadiness;
+    const idleY = Math.cos(tNow * 2.1) * 0.002 * adsSteadiness;
+    const bobAmp = player.isSprinting ? 0.019 : 0.008;
     this.swayX =
-      Math.cos(this.bobPhase) * bobAmp * moveAmt * (1 - adsAlpha * 0.8) +
+      Math.cos(this.bobPhase) * bobAmp * moveAmt * adsSteadiness +
       idleX +
-      this.lookSwayX * (1 - adsAlpha * 0.65);
+      this.lookSwayX * (1 - adsAlpha * 0.72);
     this.swayY =
-      Math.abs(Math.sin(this.bobPhase)) * bobAmp * 0.85 * moveAmt * (1 - adsAlpha * 0.8) +
+      Math.abs(Math.sin(this.bobPhase)) * bobAmp * 0.85 * moveAmt * adsSteadiness +
       idleY +
-      this.lookSwayY * (1 - adsAlpha * 0.65);
+      this.lookSwayY * (1 - adsAlpha * 0.72);
 
     // CoD-style Multi-stage Reload Choreography (Tilt -> Mag Drop -> Left Hand Slam -> Slide Rack)
     const reloadFrac = this.isReloading ? this.reloadTimer / Math.max(0.1, this.reloadDuration) : 0;
@@ -1709,8 +1805,10 @@ export class WeaponSystem {
       }
     }
 
-    // Tactical Diagonal Sprint Carry vs Inspect Spin vs Ready Aim
-    const sprintFactor = player.isSprinting && !this.isReloading ? 1 : 0;
+    // Tactical Diagonal Sprint Carry vs Inspect Spin vs Ready Aim (silky smoothed blend)
+    const targetSprint = player.isSprinting && !this.isReloading ? 1 : 0;
+    this.sprintBlend = THREE.MathUtils.damp(this.sprintBlend, targetSprint, 14, dt);
+    const sprintFactor = this.sprintBlend;
     const sprintPosX = sprintFactor * -0.075;
     const sprintPosY = sprintFactor * -0.05;
     const sprintRotX = sprintFactor * -0.14;
@@ -1758,7 +1856,7 @@ export class WeaponSystem {
     );
     this.weaponPivot.rotation.set(
       this.recoilOffsetPitch - reloadTilt * 0.34 + sprintRotX + inspectRotX + this.lookSwayY * 2.2,
-      sprintRotY + inspectRotY - reloadTilt * 0.3 + this.lookSwayX * 2.8,
+      (1 - adsAlpha) * 0.032 + sprintRotY + inspectRotY - reloadTilt * 0.3 + this.lookSwayX * 2.8,
       reloadTilt * 0.56 + sprintRotZ + inspectRotZ - this.lookSwayX * 3.5,
     );
 
