@@ -2,11 +2,13 @@ import {
   BALANCE,
   calculateRoundZombieCount,
   calculateSpawnDelay,
+  type DifficultyId,
   type EnemyType,
   type ZoneId,
 } from '../config/balance';
 import type { AudioEngine } from '../engine/AudioEngine';
-import type { SpawnPoint } from './MapBuilder';
+import { selectSafeSpawnPoint } from './combatPhysics';
+import { getZoneAtPosition, type SpawnPoint } from './MapBuilder';
 import type { RoundPhase, SeededRng } from './types';
 import type { ZombieSystem } from './ZombieSystem';
 
@@ -65,6 +67,7 @@ export class RoundSystem {
     unlockedZones: Set<ZoneId>,
     spawnPoints: SpawnPoint[],
     playerPos: { x: number; z: number },
+    difficulty: DifficultyId,
     onBannerClear: () => void,
     onRadioAnnounce: (msg: string) => void,
     onBruteEntrance?: () => void,
@@ -94,18 +97,21 @@ export class RoundSystem {
     if (this.remainingToSpawn > 0 && alive < BALANCE.rounds.maxAlive) {
       this.spawnTimer -= dt;
       if (this.spawnTimer <= 0) {
-        const validSpawns = spawnPoints.filter((s) => unlockedZones.has(s.zone));
-        if (validSpawns.length > 0) {
-          // Prefer spawn points at moderate distance (not right on top of player)
-          const candidates = validSpawns.filter((s) => {
-            const dSq = (s.position.x - playerPos.x) ** 2 + (s.position.z - playerPos.z) ** 2;
-            return dSq > 25;
-          });
-          const pool = candidates.length > 0 ? candidates : validSpawns;
-          const chosen = pool[this.rng.int(0, pool.length - 1)]!;
-
+        const unlockedSpawns = spawnPoints.filter((s) => unlockedZones.has(s.zone));
+        const playerZone = getZoneAtPosition(playerPos.x, playerPos.z);
+        const remoteSpawns = unlockedSpawns.filter((s) => s.zone !== playerZone);
+        const candidatePool = remoteSpawns.length >= 2 ? remoteSpawns : unlockedSpawns;
+        const chosen = selectSafeSpawnPoint(
+          candidatePool,
+          playerPos.x,
+          playerPos.z,
+          this.rng.next(),
+          14,
+          8.5,
+        );
+        if (chosen) {
           const enemyType = this.pickEnemyType();
-          if (this.zombies.spawnEnemy(enemyType, this.round, chosen, this.rng)) {
+          if (this.zombies.spawnEnemy(enemyType, this.round, chosen, this.rng, difficulty)) {
             this.remainingToSpawn--;
             if (enemyType === 'brute') {
               this.audio.playRoundStinger('brute');

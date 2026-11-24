@@ -58,5 +58,10 @@ describe('HOLLOWFIELD Balance & Round Formulas', () => {
       const w = getSpeedClassWeights(r);
       expect(w.walk + w.run + w.sprint).toBeCloseTo(1.0, 5);
     }
+
+    // Tactical slide & movement physics invariants
+    expect(BALANCE.player.slideInitialSpeed).toBeGreaterThan(BALANCE.player.sprintSpeed);
+    expect(BALANCE.player.groundAccel).toBeGreaterThan(BALANCE.player.friction);
   });
 });
+

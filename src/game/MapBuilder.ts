@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import type { PerkId, WeaponId, ZoneId } from '../config/balance';
 import { BALANCE } from '../config/balance';
 import type { BvhWorld, SurfaceType } from '../engine/BvhWorld';
@@ -96,6 +97,11 @@ export interface MapBuildResult {
   fusePickups: FusePickup[];
   radioConsolePos: THREE.Vector3;
   radioScreenMat: THREE.MeshStandardMaterial;
+  reactorPos: THREE.Vector3;
+  reactorStatusMat: THREE.MeshStandardMaterial;
+  extractionPos: THREE.Vector3;
+  extractionGroup: THREE.Group;
+  extractionLight: THREE.PointLight;
   poweredLights: THREE.PointLight[];
   poweredEmissives: THREE.MeshStandardMaterial[];
   flickerLights: { light: THREE.PointLight; baseIntensity: number; phase: number }[];
@@ -117,6 +123,14 @@ export const ZONE_LABELS: Record<ZoneId, string> = {
   bunker: 'Underground Bunker',
 };
 
+interface StaticBatchBucket {
+  material: THREE.Material;
+  surface: SurfaceType;
+  castShadow: boolean;
+  receiveShadow: boolean;
+  geos: THREE.BufferGeometry[];
+}
+
 export class MapBuilder {
   private readonly scene: THREE.Scene;
   private readonly physics: PhysicsWorld;
@@ -124,6 +138,7 @@ export class MapBuilder {
   private readonly nav: NavGrid;
   private readonly mats: PbrMaterialSet;
   private readonly isSoftwareGl: boolean;
+  private readonly staticBatches = new Map<string, StaticBatchBucket>();
 
   constructor(
     scene: THREE.Scene,
@@ -139,6 +154,51 @@ export class MapBuilder {
     this.nav = nav;
     this.mats = mats;
     this.isSoftwareGl = isSoftwareGl;
+  }
+
+  private queueStaticGeometry(
+    geo: THREE.BufferGeometry,
+    x: number,
+    y: number,
+    z: number,
+    material: THREE.Material,
+    surface: SurfaceType,
+    castShadow: boolean,
+    receiveShadow: boolean,
+  ): void {
+    geo.translate(x, y, z);
+    const cx = Math.floor(x / 18);
+    const cz = Math.floor(z / 18);
+    const key = `${cx},${cz}|${material.uuid}|${surface}|${castShadow ? 1 : 0}|${receiveShadow ? 1 : 0}`;
+    let bucket = this.staticBatches.get(key);
+    if (!bucket) {
+      bucket = { material, surface, castShadow, receiveShadow, geos: [] };
+      this.staticBatches.set(key, bucket);
+    }
+    bucket.geos.push(geo);
+  }
+
+  private flushStaticBatches(): void {
+    for (const bucket of this.staticBatches.values()) {
+      if (bucket.geos.length === 0) continue;
+      const merged =
+        bucket.geos.length === 1 ? bucket.geos[0]! : mergeGeometries(bucket.geos, false);
+      if (merged) {
+        merged.computeBoundingBox();
+        merged.computeBoundingSphere();
+        const mesh = new THREE.Mesh(merged, bucket.material);
+        mesh.castShadow = bucket.castShadow;
+        mesh.receiveShadow = bucket.receiveShadow;
+        this.scene.add(mesh);
+        this.bvh.registerMesh(mesh, bucket.surface);
+      }
+      if (bucket.geos.length > 1) {
+        for (const g of bucket.geos) {
+          g.dispose();
+        }
+      }
+    }
+    this.staticBatches.clear();
   }
 
   private tileBoxUvs(geo: THREE.BoxGeometry, scale = 0.35): void {
@@ -173,15 +233,10 @@ export class MapBuilder {
     material: THREE.Material,
     surface: SurfaceType,
     uvScale = 0.38,
-  ): THREE.Mesh {
+  ): void {
     const geo = new THREE.BoxGeometry(w, h, d);
     this.tileBoxUvs(geo, uvScale);
-    const mesh = new THREE.Mesh(geo, material);
-    mesh.position.set(x, y, z);
-    mesh.receiveShadow = true;
-    this.scene.add(mesh);
-    this.bvh.registerMesh(mesh, surface);
-    return mesh;
+    this.queueStaticGeometry(geo, x, y, z, material, surface, false, true);
   }
 
   private addWallBox(
@@ -200,17 +255,13 @@ export class MapBuilder {
       physicsBlock?: boolean;
       uvScale?: number;
     },
-  ): THREE.Mesh {
+  ): void {
     const geo = new THREE.BoxGeometry(w, h, d);
     this.tileBoxUvs(geo, options?.uvScale ?? 0.36);
 
-    const mesh = new THREE.Mesh(geo, material);
-    mesh.position.set(x, y, z);
-    mesh.castShadow = (options?.castShadow ?? true) && !this.isSoftwareGl;
-    mesh.receiveShadow = options?.receiveShadow ?? true;
-    this.scene.add(mesh);
-
-    this.bvh.registerMesh(mesh, surface);
+    const castShadow = (options?.castShadow ?? true) && !this.isSoftwareGl;
+    const receiveShadow = options?.receiveShadow ?? true;
+    this.queueStaticGeometry(geo, x, y, z, material, surface, castShadow, receiveShadow);
 
     if (options?.physicsBlock !== false) {
       this.physics.addStaticBox({
@@ -231,7 +282,6 @@ export class MapBuilder {
         maxZ: z + d * 0.5,
       });
     }
-    return mesh;
   }
 
   public build(): MapBuildResult {
@@ -652,8 +702,12 @@ export class MapBuilder {
     pipeRun.position.set(-15, 3.45, -41.3);
     this.scene.add(pipeRun);
 
-    // Reinforced central bunker reactor column (concrete base + brushed steel core + hazard collar + beacon)
-    this.createBunkerReactorCore(-15, -36, poweredEmissives);
+    // Reinforced central bunker reactor column (concrete base + brushed steel core + hazard collar + purge beacon)
+    const reactor = this.createBunkerReactorCore(
+      BALANCE.campaign.reactorPos.x,
+      BALANCE.campaign.reactorPos.z,
+      poweredEmissives,
+    );
 
     // Bunker spawn points
     spawnPoints.push(
@@ -721,6 +775,13 @@ export class MapBuilder {
       pl.intensity = 0.24;
     }
 
+    const extraction = this.createExtractionBeacon(
+      BALANCE.campaign.extractionPos.x,
+      BALANCE.campaign.extractionPos.z,
+    );
+
+    this.flushStaticBatches();
+
     return {
       doors,
       windows,
@@ -741,6 +802,11 @@ export class MapBuilder {
       fusePickups,
       radioConsolePos: radioConsole.pos,
       radioScreenMat: radioConsole.screenMat,
+      reactorPos: reactor.pos,
+      reactorStatusMat: reactor.statusMat,
+      extractionPos: extraction.pos,
+      extractionGroup: extraction.group,
+      extractionLight: extraction.light,
       poweredLights,
       poweredEmissives,
       flickerLights,
@@ -1008,8 +1074,8 @@ export class MapBuilder {
     const w = axis === 'z' ? 2.4 : 0.6;
     const d = axis === 'x' ? 2.4 : 0.6;
 
-    // Sill & header leave 1.9m tall opening for zombies, block player capsule
-    this.addWallBox(cx, 0.55, cz, w, 1.1, d, this.mats.timberBeam, 'wood', { navBlock: false });
+    // Sill & header leave 1.9m tall opening for climbing zombies; sill blocks chasing flow-field so zombies never ghost through windows
+    this.addWallBox(cx, 0.55, cz, w, 1.1, d, this.mats.timberBeam, 'wood');
     this.addWallBox(cx, 3.55, cz, w, 1.3, d, this.mats.timberBeam, 'wood', { navBlock: false });
 
     // Side casing jambs
@@ -1034,7 +1100,12 @@ export class MapBuilder {
       });
     }
 
-    this.nav.clearAreaWalkable(cx - 1.5, cx + 1.5, cz - 1.5, cz + 1.5);
+    const outX = axis === 'x' ? outsideCoord : cx;
+    const outZ = axis === 'x' ? cz : outsideCoord;
+    const inX = axis === 'x' ? insideCoord : cx;
+    const inZ = axis === 'x' ? cz : insideCoord;
+    this.nav.clearAreaWalkable(outX - 0.25, outX + 0.25, outZ - 0.25, outZ + 0.25);
+    this.nav.clearAreaWalkable(inX - 0.25, inX + 0.25, inZ - 0.25, inZ + 0.25);
 
     const planks: THREE.Mesh[] = [];
     for (let i = 0; i < BALANCE.economy.barricade.maxPlanks; i++) {
@@ -1053,10 +1124,8 @@ export class MapBuilder {
       id,
       zone,
       center: new THREE.Vector3(cx, 1.3, cz),
-      outsidePos:
-        axis === 'x' ? new THREE.Vector3(outsideCoord, 0, cz) : new THREE.Vector3(cx, 0, outsideCoord),
-      insidePos:
-        axis === 'x' ? new THREE.Vector3(insideCoord, 0, cz) : new THREE.Vector3(cx, 0, insideCoord),
+      outsidePos: new THREE.Vector3(outX, 0, outZ),
+      insidePos: new THREE.Vector3(inX, 0, inZ),
       planks,
       intactCount: BALANCE.economy.barricade.maxPlanks,
       repairProgress: 0,
@@ -1160,6 +1229,7 @@ export class MapBuilder {
     light.position.set(0, 1.85, 0.85);
 
     this.scene.add(group);
+    this.bvh.registerMesh(cabinet, 'metal');
 
     this.physics.addStaticBox({
       cx: pos.x,
@@ -1237,6 +1307,7 @@ export class MapBuilder {
     group.add(skyBeam);
 
     this.scene.add(group);
+    this.bvh.registerMesh(base, 'wood');
 
     this.physics.addStaticBox({
       cx: pos.x,
@@ -1421,6 +1492,11 @@ export class MapBuilder {
     this.scene.add(group);
     this.bvh.registerMesh(hood, 'metal');
     this.bvh.registerMesh(frame, 'metal');
+    for (const child of group.children) {
+      if (child instanceof THREE.Mesh && child.geometry.type === 'CylinderGeometry') {
+        this.bvh.registerMesh(child, 'metal');
+      }
+    }
     this.physics.addStaticBox({ cx: x, cy: 1.0, cz: z, hx: 1.25, hy: 1.2, hz: 2.0 });
     this.nav.addStaticObstacle({ minX: x - 1.25, maxX: x + 1.25, minZ: z - 2.0, maxZ: z + 2.0 });
   }
@@ -1578,8 +1654,17 @@ export class MapBuilder {
     cap.position.y = 3.45;
     group.add(cap);
 
+    const vatCore = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.95, 0.95, 2.55, 12),
+      this.mats.darkTrim,
+    );
+    vatCore.position.y = 1.9;
+    vatCore.visible = false;
+    group.add(vatCore);
+
     this.scene.add(group);
     this.bvh.registerMesh(base, 'metal');
+    this.bvh.registerMesh(vatCore, 'metal');
     this.physics.addStaticBox({ cx: x, cy: 1.8, cz: z, hx: 1.35, hy: 1.8, hz: 1.35 });
     this.nav.addStaticObstacle({ minX: x - 1.35, maxX: x + 1.35, minZ: z - 1.35, maxZ: z + 1.35 });
   }
@@ -1588,7 +1673,7 @@ export class MapBuilder {
     x: number,
     z: number,
     poweredEmissives: THREE.MeshStandardMaterial[],
-  ): void {
+  ): { pos: THREE.Vector3; statusMat: THREE.MeshStandardMaterial } {
     const group = new THREE.Group();
     group.position.set(x, 0, z);
 
@@ -1608,25 +1693,84 @@ export class MapBuilder {
     topCap.position.y = 3.4;
     group.add(topCap);
 
-    // Side glowing coolant conduits + status strip
-    const conduitMat = new THREE.MeshStandardMaterial({
+    // Side glowing coolant conduits + front/back purge status strip
+    const statusMat = new THREE.MeshStandardMaterial({
       color: 0xf59e0b,
       emissive: 0xd97706,
-      emissiveIntensity: 0.2,
+      emissiveIntensity: 0.45,
       roughness: 0.3,
     });
-    poweredEmissives.push(conduitMat);
+    poweredEmissives.push(statusMat);
     for (const side of [-1, 1]) {
-      const strip = new THREE.Mesh(new THREE.BoxGeometry(0.14, 1.6, 0.14), conduitMat);
+      const strip = new THREE.Mesh(new THREE.BoxGeometry(0.14, 1.6, 0.14), statusMat);
       strip.position.set(side * 1.52, 2.0, 0);
       group.add(strip);
     }
+    const frontBeacon = new THREE.Mesh(new THREE.BoxGeometry(0.95, 0.24, 0.12), statusMat);
+    frontBeacon.position.set(0, 1.6, 1.01);
+    const backBeacon = frontBeacon.clone();
+    backBeacon.position.z = -1.01;
+    group.add(frontBeacon, backBeacon);
 
     this.scene.add(group);
     this.bvh.registerMesh(base, 'concrete');
     this.bvh.registerMesh(core, 'metal');
     this.physics.addStaticBox({ cx: x, cy: 1.8, cz: z, hx: 1.65, hy: 1.85, hz: 1.15 });
     this.nav.addStaticObstacle({ minX: x - 1.65, maxX: x + 1.65, minZ: z - 1.15, maxZ: z + 1.15 });
+    return { pos: new THREE.Vector3(x, 1.4, z), statusMat };
+  }
+
+  private createExtractionBeacon(
+    x: number,
+    z: number,
+  ): { pos: THREE.Vector3; group: THREE.Group; light: THREE.PointLight } {
+    const group = new THREE.Group();
+    group.position.set(x, 0, z);
+    group.visible = false;
+
+    const flareMat = new THREE.MeshStandardMaterial({
+      color: 0x22c55e,
+      emissive: 0x16a34a,
+      emissiveIntensity: 2.2,
+      roughness: 0.25,
+    });
+    const canister = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.14, 0.42, 10), flareMat);
+    canister.position.y = 0.21;
+    group.add(canister);
+
+    const ring = new THREE.Mesh(
+      new THREE.RingGeometry(1.15, 1.45, 24),
+      new THREE.MeshBasicMaterial({
+        color: 0x4ade80,
+        transparent: true,
+        opacity: 0.72,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      }),
+    );
+    ring.rotation.x = -Math.PI / 2;
+    ring.position.y = 0.08;
+    group.add(ring);
+
+    const skyBeam = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.18, 0.52, 22, 14, 1, true),
+      new THREE.MeshBasicMaterial({
+        color: 0x4ade80,
+        transparent: true,
+        opacity: 0.26,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+      }),
+    );
+    skyBeam.position.y = 11;
+    group.add(skyBeam);
+
+    const light = new THREE.PointLight(0x22c55e, 0, 18, 1.3);
+    light.position.set(x, 1.5, z);
+    this.scene.add(group, light);
+
+    return { pos: new THREE.Vector3(x, 0.8, z), group, light };
   }
 
   private createLampPost(
@@ -1720,7 +1864,7 @@ export class MapBuilder {
       const sy = yBase + (i + 0.5) * stepH;
       const sz = zCenter - i * stepL;
       this.addWallBox(x, sy, sz, width, stepH, stepL + 0.08, this.mats.barnWood, 'wood', {
-        navBlock: false,
+        navBlock: sy > 0.32,
         castShadow: false,
       });
     }
@@ -1809,6 +1953,8 @@ export class MapBuilder {
     light.position.set(0, 1.75, 0.6);
 
     this.scene.add(group);
+    this.bvh.registerMesh(chassis, 'metal');
+    this.bvh.registerMesh(topPlate, 'metal');
     this.physics.addStaticBox({ cx: pos.x, cy: 0.6, cz: pos.z, hx: 1.2, hy: 0.65, hz: 0.58 });
     this.nav.addStaticObstacle({
       minX: pos.x - 1.2,
@@ -1952,6 +2098,8 @@ export class MapBuilder {
     group.add(antenna);
 
     this.scene.add(group);
+    this.bvh.registerMesh(desk, 'metal');
+    this.bvh.registerMesh(unit, 'metal');
     this.physics.addStaticBox({ cx: pos.x, cy: 0.6, cz: pos.z, hx: 0.95, hy: 0.65, hz: 0.5 });
     this.nav.addStaticObstacle({
       minX: pos.x - 0.95,
@@ -2014,8 +2162,11 @@ export class MapBuilder {
   }
 
   private createFarmhouseTable(x: number, z: number): void {
-    // Rustic timber table with lantern & chairs
+    // Rustic timber table with solid core apron so waist-height cover blocks zombie attacks cleanly
     this.addWallBox(x, 0.76, z, 1.9, 0.09, 1.05, this.mats.barnWood, 'wood');
+    this.addWallBox(x, 0.38, z, 1.55, 0.68, 0.75, this.mats.timberBeam, 'wood', {
+      navBlock: false,
+    });
     for (const lx of [-0.82, 0.82]) {
       for (const lz of [-0.42, 0.42]) {
         const leg = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.74, 0.09), this.mats.timberBeam);
@@ -2097,6 +2248,7 @@ export class MapBuilder {
         bag.castShadow = !this.isSoftwareGl;
         bag.receiveShadow = true;
         this.scene.add(bag);
+        this.bvh.registerMesh(bag, 'dirt');
       }
     }
     this.addContactShadow(x, 0.055, z, 2.8);
@@ -2119,6 +2271,7 @@ export class MapBuilder {
     rimB.position.y = 0.32;
     g.add(body, rimA, rimB);
     this.scene.add(g);
+    this.bvh.registerMesh(body, 'metal');
     this.addContactShadow(x, 0.065, z, 1.15);
     this.physics.addStaticBox({ cx: x, cy: 0.51, cz: z, hx: 0.38, hy: 0.51, hz: 0.38 });
     this.nav.addStaticObstacle({ minX: x - 0.38, maxX: x + 0.38, minZ: z - 0.38, maxZ: z + 0.38 });

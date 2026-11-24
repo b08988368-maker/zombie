@@ -32,7 +32,7 @@ export function scheduleAfterDraw(
         registerTimer(window.setTimeout(poll, 4));
       } else {
         if (sync) gl.deleteSync(sync);
-        registerTimer(window.setTimeout(cb, 4));
+        registerTimer(window.setTimeout(cb, 120));
       }
     };
     registerTimer(window.setTimeout(poll, 4));

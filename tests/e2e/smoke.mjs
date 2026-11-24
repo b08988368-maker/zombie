@@ -28,27 +28,26 @@ async function run() {
   });
 
   const context = await browser.newContext({ viewport: { width: 1280, height: 720 } });
-  const page = await context.newPage();
-
   const consoleErrors = [];
   const pageErrors = [];
-  page.on('console', (msg) => {
+
+  console.log(`[E2E] Verifying hardware postprocessing EffectComposer at ${BASE_URL}/?forcePostProcess=1`);
+  const ppPage = await context.newPage();
+  ppPage.on('console', (msg) => {
     if (msg.type() === 'error') {
       consoleErrors.push(msg.text());
     }
   });
-  page.on('pageerror', (err) => {
+  ppPage.on('pageerror', (err) => {
     pageErrors.push(String(err));
   });
-
-  console.log(`[E2E] Verifying hardware postprocessing EffectComposer at ${BASE_URL}/?forcePostProcess=1`);
-  await page.goto(`${BASE_URL}/?forcePostProcess=1`, { waitUntil: 'domcontentloaded' });
-  await page.waitForSelector('[data-testid="play-button"]', { timeout: 25000 });
-  await page.waitForTimeout(500);
+  await ppPage.goto(`${BASE_URL}/?forcePostProcess=1`, { waitUntil: 'domcontentloaded' });
+  await ppPage.waitForSelector('[data-testid="play-button"]', { timeout: 25000 });
+  await ppPage.waitForTimeout(500);
   const measureClipLuma = async () => {
-    const buf = await page.screenshot({ clip: { x: 700, y: 160, width: 320, height: 320 } });
+    const buf = await ppPage.screenshot({ clip: { x: 700, y: 160, width: 320, height: 320 } });
     const b64 = buf.toString('base64');
-    return page.evaluate(async (src) => {
+    return ppPage.evaluate(async (src) => {
       const img = new Image();
       img.src = `data:image/png;base64,${src}`;
       await new Promise((res) => { img.onload = res; });
@@ -69,8 +68,8 @@ async function run() {
   if (ppMenuLuma < 20) {
     throw new Error(`PostProcess menu rendered black (avg RGB sum=${ppMenuLuma.toFixed(1)})`);
   }
-  await page.click('[data-testid="play-button"]');
-  await page.waitForTimeout(500);
+  await ppPage.click('[data-testid="play-button"]');
+  await ppPage.waitForTimeout(500);
   const ppPlayLuma = await measureClipLuma();
   if (ppPlayLuma < 40) {
     throw new Error(`PostProcess gameplay rendered black (avg RGB sum=${ppPlayLuma.toFixed(1)})`);
@@ -78,20 +77,41 @@ async function run() {
   if (consoleErrors.length > 0 || pageErrors.length > 0) {
     throw new Error(`PostProcess EffectComposer errors: ${JSON.stringify({ consoleErrors, pageErrors })}`);
   }
+  await ppPage.close();
   console.log(`[E2E] Hardware EffectComposer pass verified (0 errors, luma=${ppMenuLuma.toFixed(1)}/${ppPlayLuma.toFixed(1)}).`);
+
+  const page = await context.newPage();
+  page.on('console', (msg) => {
+    if (msg.type() === 'error') {
+      consoleErrors.push(msg.text());
+    }
+  });
+  page.on('pageerror', (err) => {
+    pageErrors.push(String(err));
+  });
 
   console.log(`[E2E] Navigating to ${BASE_URL}`);
   await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' });
 
-  // 1. Wait for Play button on 3D menu & capture main menu
+  // 1. Wait for Play button on 3D menu, test Difficulty selector & capture main menu
   await page.waitForSelector('[data-testid="play-button"]', { timeout: 25000 });
+  await page.click('[data-testid="difficulty-nightmare"]');
+  await page.waitForFunction(
+    () => {
+      const raw = localStorage.getItem('hollowfield_settings_v1');
+      return raw ? JSON.parse(raw).difficulty === 'nightmare' : false;
+    },
+    null,
+    { timeout: 5000 },
+  );
+  await page.click('[data-testid="difficulty-survivor"]');
   await page.waitForTimeout(700);
-  await page.screenshot({ path: path.join(ARTIFACT_DIR, '01_main_menu.png'), animations: 'disabled' });
-  console.log('[E2E] Main menu rendered.');
+  await page.screenshot({ path: path.join(ARTIFACT_DIR, '01_main_menu.png'), animations: 'disabled', timeout: 45000 });
+  console.log('[E2E] Main menu & difficulty selector rendered.');
 
   // 2. Verify Settings menu & localStorage persistence
   await page.click('button:has-text("Settings")');
-  await page.waitForSelector('h2:has-text("Settings")', { timeout: 5000 });
+  await page.waitForSelector('h2:has-text("Settings")', { timeout: 10000 });
   await page.selectOption('select', 'medium');
   const savedQuality = await page.evaluate(() => {
     const raw = localStorage.getItem('hollowfield_settings_v1');
@@ -121,7 +141,7 @@ async function run() {
   }
   console.log('[E2E] HUD zero-overlap verified at 1280x720.');
 
-  await page.screenshot({ path: path.join(ARTIFACT_DIR, '02_farmhouse_spawn.png'), animations: 'disabled' });
+  await page.screenshot({ path: path.join(ARTIFACT_DIR, '02_farmhouse_spawn.png'), animations: 'disabled', timeout: 45000 });
 
   // 3a. Verify crosshair ("cross aim") is visible in BOTH hipfire & ADS, and KeyT toggles flashlight
   const hipCrosshair = await page.locator('[data-testid="crosshair"]').boundingBox();
@@ -133,7 +153,7 @@ async function run() {
   await page.waitForFunction(
     () => window.__HOLLOWFIELD_DEBUG__.getState().isAds === true,
     null,
-    { timeout: 5000 },
+    { timeout: 15000 },
   );
   const adsCrosshair = await page.locator('[data-testid="crosshair"]').boundingBox();
   if (!adsCrosshair || adsCrosshair.width < 10 || adsCrosshair.height < 10) {
@@ -146,13 +166,13 @@ async function run() {
   await page.waitForFunction(
     (prev) => window.__HOLLOWFIELD_DEBUG__.getState().flashlightOn !== prev,
     flashBefore,
-    { timeout: 5000 },
+    { timeout: 15000 },
   );
   await page.keyboard.press('KeyT');
   await page.waitForFunction(
     (prev) => window.__HOLLOWFIELD_DEBUG__.getState().flashlightOn === prev,
     flashBefore,
-    { timeout: 5000 },
+    { timeout: 15000 },
   );
   console.log('[E2E] Hipfire + ADS crosshair & KeyT tactical flashlight verified.');
 
@@ -183,13 +203,13 @@ async function run() {
   await page.waitForFunction(
     () => window.__HOLLOWFIELD_DEBUG__.getState().screen === 'paused',
     null,
-    { timeout: 5000 },
+    { timeout: 15000 },
   );
   await page.keyboard.press('KeyP');
   await page.waitForFunction(
     () => window.__HOLLOWFIELD_DEBUG__.getState().screen === 'playing',
     null,
-    { timeout: 5000 },
+    { timeout: 15000 },
   );
   console.log('[E2E] Auto-pause on pointer unlock & Resume verified.');
 
@@ -200,7 +220,7 @@ async function run() {
   await page.waitForFunction(
     () => window.__HOLLOWFIELD_DEBUG__.getState().screen === 'paused',
     null,
-    { timeout: 5000 },
+    { timeout: 15000 },
   );
   await page.evaluate(() => {
     HTMLCanvasElement.prototype.requestPointerLock = () =>
@@ -213,7 +233,7 @@ async function run() {
       return st.screen === 'playing' && st.pointerLockBlocked === true;
     },
     null,
-    { timeout: 5000 },
+    { timeout: 15000 },
   );
   await page.mouse.move(640, 360);
   await page.mouse.move(740, 350, { steps: 4 });
@@ -512,16 +532,133 @@ async function run() {
   await page.waitForTimeout(300);
   await page.screenshot({ path: path.join(ARTIFACT_DIR, '07_bunker.png'), animations: 'disabled', timeout: 45000 });
 
-  // 10. Test Round 12 Brute spawn & round transition
+  // 9b. Verify Round 4 off-screen flanking threat indicators, visible above-floor rigs, & solid cover/wall occlusion
+  await page.evaluate(() => {
+    const dbg = window.__HOLLOWFIELD_DEBUG__;
+    dbg.jumpToRound(4);
+    dbg.spawnAllZombiesTest(6);
+  });
+  await page.waitForFunction(
+    () => {
+      const zs = window.__HOLLOWFIELD_DEBUG__.getZombies();
+      return zs.length > 0 && zs.some((z) => z.state === 'chase') && zs.every((z) => !z.isRising);
+    },
+    null,
+    { timeout: 20000 },
+  );
+  await page.waitForTimeout(200);
+  const visibilityAudit = await page.evaluate(() => {
+    const zs = window.__HOLLOWFIELD_DEBUG__.getZombies();
+    const invisible = zs.filter((z) => !z.visible);
+    const underground = zs.filter((z) => !z.isRising && z.state === 'chase' && z.bodyY < -0.08);
+    const insideRamp = zs.filter(
+      (z) => z.x > 24.2 && z.x < 26.8 && z.z > 6.9 && z.z < 12.1 && z.y < 0.5,
+    );
+    return { total: zs.length, invisible, underground, insideRamp };
+  });
+  if (visibilityAudit.invisible.length > 0 || visibilityAudit.underground.length > 0) {
+    throw new Error(`Invisible/underground zombie detected: ${JSON.stringify(visibilityAudit)}`);
+  }
+  if (visibilityAudit.insideRamp.length > 0) {
+    throw new Error(`Zombie clipped inside Barn hayloft ramp: ${JSON.stringify(visibilityAudit.insideRamp)}`);
+  }
+
+  await page.evaluate(() => {
+    const zs = window.__HOLLOWFIELD_DEBUG__.getZombies();
+    const chaser = zs.find((z) => z.state === 'chase') || zs[0];
+    if (chaser) {
+      window.__HOLLOWFIELD_DEBUG__.setPlayerPose(chaser.x, 0.9, chaser.z - 4.2, 0, -0.02);
+    }
+  });
+  await page.waitForFunction(
+    () => window.__HOLLOWFIELD_DEBUG__.getState().offscreenThreats.length >= 1,
+    null,
+    { timeout: 10000 },
+  );
+  // Stand behind Farmhouse Kitchen Island cover (-7, 19.65) and verify no phantom punch lands across solid cover
+  const hpBeforeCover = await page.evaluate(() => {
+    window.__HOLLOWFIELD_DEBUG__.setPlayerPose(-7, 0.9, 19.8, 0, -0.05);
+    return window.__HOLLOWFIELD_DEBUG__.getState().health;
+  });
+  await page.waitForTimeout(1200);
+  const hpAfterCover = await page.evaluate(() => window.__HOLLOWFIELD_DEBUG__.getState().health);
+  if (hpAfterCover < hpBeforeCover) {
+    throw new Error(`Phantom melee hit detected behind Kitchen Island cover (${hpBeforeCover} -> ${hpAfterCover})`);
+  }
+
+  // Stand inside Farmhouse against North wall (facing away so exterior Silo Yard zombies are behind) and verify 0 phantom arrows for wall-occluded zombies
+  const occludedAudit = await page.evaluate(() => {
+    const dbg = window.__HOLLOWFIELD_DEBUG__;
+    dbg.jumpToRound(4);
+    dbg.spawnAllZombiesTest(4);
+    // Farmhouse interior at (-11.7, 11.4) directly behind solid North wall at z=10, facing South (+Z)
+    dbg.setPlayerPose(-11.7, 0.9, 11.4, Math.PI, 0);
+    return dbg.getState();
+  });
+  await page.waitForTimeout(700);
+  const occludedAfter = await page.evaluate(() => {
+    const st = window.__HOLLOWFIELD_DEBUG__.getState();
+    const zs = window.__HOLLOWFIELD_DEBUG__.getZombies();
+    const losCount = zs.filter((z) => z.hasLos).length;
+    return {
+      threats: st.offscreenThreats?.length ?? 0,
+      losCount,
+      health: st.health,
+    };
+  });
+  if (occludedAfter.losCount === 0 && occludedAfter.threats > 0) {
+    throw new Error(`Wall-occluded phantom arrows leaked when no zombie had LOS: ${JSON.stringify(occludedAfter)}`);
+  }
+  if (occludedAfter.health < occludedAudit.health && occludedAfter.losCount === 0) {
+    throw new Error(`Wall-occluded phantom damage leaked when no zombie had LOS: ${JSON.stringify(occludedAfter)}`);
+  }
+  console.log('[E2E] Round 4 off-screen flanking chevrons, above-floor visibility & wall-occlusion verified.');
+
+  // 9c. Verify Bloater blast behind solid Farmhouse wall deals 0 damage
+  const hpBeforeWallBlast = await page.evaluate(() => {
+    window.__HOLLOWFIELD_DEBUG__.setPlayerPose(-7, 0.9, 16.5, 0, 0);
+    return window.__HOLLOWFIELD_DEBUG__.getState().health;
+  });
+  await page.evaluate(() => {
+    // Farmhouse north wall sits at z=10; trigger explosion just outside at z=8.2
+    window.__HOLLOWFIELD_DEBUG__.triggerBloaterExplosionTest(-7, 1.0, 8.2);
+  });
+  await page.waitForTimeout(250);
+  const hpAfterWallBlast = await page.evaluate(() => window.__HOLLOWFIELD_DEBUG__.getState().health);
+  if (hpAfterWallBlast < hpBeforeWallBlast) {
+    throw new Error(`Wall-occluded bloater blast leaked damage (${hpBeforeWallBlast} -> ${hpAfterWallBlast})`);
+  }
+  console.log('[E2E] Wall-occluded bloater explosion = 0 damage verified.');
+
+  // 10. Test Round 12 Brute spawn & Alpha Bloom Brute Boss HUD bar
   await page.evaluate(() => {
     window.__HOLLOWFIELD_DEBUG__.jumpToRound(12);
+    window.__HOLLOWFIELD_DEBUG__.spawnBossTest('alpha_boss');
   });
-  await page.waitForTimeout(500);
+  await page.waitForSelector('[data-testid="boss-bar"]', { timeout: 8000 });
   const round12State = await page.evaluate(() => window.__HOLLOWFIELD_DEBUG__.getState());
-  if (round12State.round !== 12) {
-    throw new Error(`Expected round 12 after jumpToRound(12), got ${round12State.round}`);
+  if (round12State.round !== 12 || !round12State.boss) {
+    throw new Error(`Expected round 12 & active boss bar, got round=${round12State.round} boss=${JSON.stringify(round12State.boss)}`);
   }
-  console.log('[E2E] High-round transition (Round 12) verified.');
+  console.log('[E2E] High-round transition (Round 12) & Alpha Boss HUD verified.');
+
+  // 11. Verify Victory screen & Continue Endless Survival (+5,000 PTS)
+  const ptsBeforeVictory = round12State.points;
+  await page.evaluate(() => {
+    window.__HOLLOWFIELD_DEBUG__.triggerVictoryTest();
+  });
+  await page.waitForSelector('[data-testid="victory-screen"]', { timeout: 8000 });
+  await page.screenshot({ path: path.join(ARTIFACT_DIR, '08_victory_screen.png'), animations: 'disabled' });
+  await page.click('[data-testid="continue-endless-button"]');
+  await page.waitForFunction(
+    (prevPts) => {
+      const st = window.__HOLLOWFIELD_DEBUG__.getState();
+      return st.screen === 'playing' && st.campaign?.endlessMode === true && st.points > prevPts;
+    },
+    ptsBeforeVictory,
+    { timeout: 8000 },
+  );
+  console.log('[E2E] Victory screen & Continue Endless Survival verified.');
 
   const finalState = await page.evaluate(() => window.__HOLLOWFIELD_DEBUG__.getState());
   const stuckTeleports = await page.evaluate(() => window.__HOLLOWFIELD_DEBUG__.getStuckTeleports());

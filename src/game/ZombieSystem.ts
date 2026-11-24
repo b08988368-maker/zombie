@@ -3,15 +3,24 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import {
   BALANCE,
   calculateZombieHealth,
+  DIFFICULTY_PRESETS,
   getSpeedClassWeights,
+  type DifficultyId,
   type EnemyType,
   type ZoneId,
 } from '../config/balance';
 import type { AudioEngine } from '../engine/AudioEngine';
+import type { BvhWorld } from '../engine/BvhWorld';
 import type { NavGrid } from '../engine/NavGrid';
 import type { PbrMaterialSet } from '../engine/ProceduralAssets';
+import {
+  canZombieStrikePlayer,
+  computeDirectionalFall,
+  resolvePlayerZombieStandoff,
+  selectSafeSpawnPoint,
+} from './combatPhysics';
 import type { SpawnPoint, WindowBarricade } from './MapBuilder';
-import type { SeededRng } from './types';
+import type { BossHudState, DamageSource, SeededRng } from './types';
 
 export type ZombieState =
   | 'approach_window'
@@ -42,21 +51,30 @@ interface ZombieEntity {
   id: number;
   active: boolean;
   type: EnemyType;
+  bossRole: 'none' | 'warden' | 'alpha_boss';
   speedClass: 'walk' | 'run' | 'sprint';
   moveSpeed: number;
   health: number;
   maxHealth: number;
   state: ZombieState;
   stateTimer: number;
+  bloaterBeepTimer: number;
   attackCooldown: number;
   attackDealt: boolean;
   chargeCooldown: number;
   groanTimer: number;
+  stepSoundTimer: number;
   hitReactTimer: number;
   hitReactDirX: number;
   hitReactDirZ: number;
   hitReactZone: HitZone;
+  hitFlashTimer: number;
+  hitFlashActive: boolean;
   deathFallRoll: number;
+  deathPitchTarget: number;
+  deathRollTarget: number;
+  deathVx: number;
+  deathVz: number;
   staggerTimer: number;
   isCrawler: boolean;
   woundedShown: boolean;
@@ -64,9 +82,14 @@ interface ZombieEntity {
   x: number;
   y: number;
   z: number;
+  prevX: number;
+  prevZ: number;
   yaw: number;
   vx: number;
   vz: number;
+  kbVx: number;
+  kbVz: number;
+  strideBlend: number;
 
   // Stuck detection
   lastProgressX: number;
@@ -144,9 +167,11 @@ const MAX_ZOMBIES = BALANCE.rounds.maxAlive;
 export class ZombieSystem {
   public readonly entities: ZombieEntity[] = [];
   public stuckTeleportCount = 0;
+  public onBossKilled: ((role: 'warden' | 'alpha_boss', x: number, y: number, z: number) => void) | null = null;
 
   private readonly scene: THREE.Scene;
   private readonly nav: NavGrid;
+  private readonly bvh: BvhWorld;
   private readonly audio: AudioEngine;
   private readonly mats: PbrMaterialSet;
   private readonly isSoftwareGl: boolean;
@@ -158,6 +183,8 @@ export class ZombieSystem {
   private readonly sepSample = { x: 0, z: 0 };
   private readonly raycaster = new THREE.Raycaster();
   private readonly tmpVec = new THREE.Vector3();
+  private readonly tmpZombieEye = new THREE.Vector3();
+  private readonly tmpPlayerEye = new THREE.Vector3();
   private readonly allHitboxes: THREE.Mesh[] = [];
 
   private nextZombieId = 1;
@@ -227,19 +254,48 @@ export class ZombieSystem {
     emissiveIntensity: 0.95,
     roughness: 0.6,
   });
+  private readonly hitFlashSkinMat = new THREE.MeshStandardMaterial({
+    color: 0xfca5a5,
+    emissive: 0xb91c1c,
+    emissiveIntensity: 1.15,
+    roughness: 0.45,
+  });
+  private readonly hitFlashClothMat = new THREE.MeshStandardMaterial({
+    color: 0xfecaca,
+    emissive: 0x991b1b,
+    emissiveIntensity: 1.0,
+    roughness: 0.5,
+  });
 
   constructor(
     scene: THREE.Scene,
     nav: NavGrid,
+    bvh: BvhWorld,
     audio: AudioEngine,
     mats: PbrMaterialSet,
     isSoftwareGl: boolean,
   ) {
     this.scene = scene;
     this.nav = nav;
+    this.bvh = bvh;
     this.audio = audio;
     this.mats = mats;
     this.isSoftwareGl = isSoftwareGl;
+    for (const g of [
+      this.headGeo,
+      this.torsoGeo,
+      this.upperArmGeo,
+      this.forearmGeo,
+      this.thighGeo,
+      this.shinGeo,
+      this.eyesGeo,
+      this.houndBodyGeo,
+      this.houndHeadGeo,
+      this.houndLegGeo,
+      this.houndEyesGeo,
+    ]) {
+      g.computeBoundingSphere();
+    }
     this.contactShadowGeo.rotateX(-Math.PI / 2);
     this.contactShadowMat = new THREE.MeshBasicMaterial({
       map: mats.contactShadowTex,
@@ -488,15 +544,15 @@ export class ZombieSystem {
       torsoMesh.userData = { poolIdx: i, hitZone: 'torso' as HitZone };
       torsoPivot.add(torsoMesh);
 
-      // Torn bloodied chest/shoulder gash & dynamic low-health wound patch
-      const chestBlood = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.28, 0.34), bloodMat);
-      chestBlood.position.set((i % 2 === 0 ? 1 : -1) * 0.05, 0.04, 0.01);
+      // Torn bloodied chest/shoulder gash tucked flush into torso & dynamic low-health wound patch
+      const chestBlood = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.24, 0.23), bloodMat);
+      chestBlood.position.set((i % 2 === 0 ? 1 : -1) * 0.04, 0.04, 0.015);
       chestBlood.rotation.z = i % 2 === 0 ? 0.18 : -0.18;
       torsoMesh.add(chestBlood);
 
-      const bloodWoundMesh = new THREE.Mesh(new THREE.SphereGeometry(0.15, 7, 7), bloodMat);
-      bloodWoundMesh.scale.set(1.2, 1.3, 0.5);
-      bloodWoundMesh.position.set(-0.04, 0.08, 0.14);
+      const bloodWoundMesh = new THREE.Mesh(new THREE.SphereGeometry(0.12, 7, 7), bloodMat);
+      bloodWoundMesh.scale.set(1.1, 1.15, 0.32);
+      bloodWoundMesh.position.set(-0.04, 0.08, 0.115);
       bloodWoundMesh.visible = false;
       torsoMesh.add(bloodWoundMesh);
 
@@ -529,13 +585,13 @@ export class ZombieSystem {
             map: this.mats.eyeGlowTex,
             color: 0xfbbf24,
             transparent: true,
-            opacity: 0.9,
+            opacity: 0.56,
             depthWrite: false,
             blending: THREE.AdditiveBlending,
           }),
         );
-        sp.position.set(ex, 0.025, 0.144);
-        sp.scale.set(0.14, 0.14, 1);
+        sp.position.set(ex, 0.025, 0.142);
+        sp.scale.set(0.11, 0.11, 1);
         headMesh.add(sp);
         return sp;
       }) as [THREE.Sprite, THREE.Sprite];
@@ -745,30 +801,44 @@ export class ZombieSystem {
         id: 0,
         active: false,
         type: 'shambler',
+        bossRole: 'none',
         speedClass: 'walk',
         moveSpeed: BALANCE.enemies.shambler.walkSpeed,
         health: 150,
         maxHealth: 150,
         state: 'dead',
         stateTimer: 0,
+        bloaterBeepTimer: 0,
         attackCooldown: 0,
         attackDealt: false,
         chargeCooldown: 4,
         groanTimer: 2,
+        stepSoundTimer: 0.4,
         hitReactTimer: 0,
         hitReactDirX: 0,
         hitReactDirZ: 0,
         hitReactZone: 'torso',
+        hitFlashTimer: 0,
+        hitFlashActive: false,
         deathFallRoll: 0,
+        deathPitchTarget: -Math.PI * 0.48,
+        deathRollTarget: 0,
+        deathVx: 0,
+        deathVz: 0,
         staggerTimer: 0,
         isCrawler: false,
         woundedShown: false,
         x: 0,
         y: 0,
         z: 0,
+        prevX: 0,
+        prevZ: 0,
         yaw: 0,
         vx: 0,
         vz: 0,
+        kbVx: 0,
+        kbVz: 0,
+        strideBlend: 0,
         lastProgressX: 0,
         lastProgressZ: 0,
         stuckTimer: 0,
@@ -877,16 +947,100 @@ export class ZombieSystem {
     return Array.from(set);
   }
 
+  public getActiveBossState(): BossHudState | null {
+    for (const e of this.entities) {
+      if (!e.active || e.state === 'dying' || e.state === 'dead' || e.bossRole === 'none') continue;
+      return {
+        name: e.bossRole === 'alpha_boss' ? 'ALPHA BLOOM BRUTE' : 'CONTAINMENT WARDEN',
+        health: Math.max(0, Math.ceil(e.health)),
+        maxHealth: Math.max(1, Math.ceil(e.maxHealth)),
+      };
+    }
+    return null;
+  }
+
+  public getActiveBossPosition(role: 'warden' | 'alpha_boss'): { x: number; z: number } | null {
+    for (const e of this.entities) {
+      if (!e.active || e.state === 'dying' || e.state === 'dead') continue;
+      if (e.bossRole === role) return { x: e.x, z: e.z };
+    }
+    return null;
+  }
+
+  public getNearestFusingBloaterDist(playerPos: THREE.Vector3): number | null {
+    let best: number | null = null;
+    for (const e of this.entities) {
+      if (!e.active || e.type !== 'bloater' || e.state !== 'bloater_fuse') continue;
+      const d = Math.hypot(e.x - playerPos.x, e.z - playerPos.z);
+      if (best === null || d < best) best = d;
+    }
+    return best;
+  }
+
+  public spawnBoss(
+    role: 'warden' | 'alpha_boss',
+    round: number,
+    spawnPoint: SpawnPoint,
+    rng: SeededRng,
+    difficulty: DifficultyId = 'survivor',
+  ): boolean {
+    let slot = this.entities.find((e) => !e.active);
+    if (!slot) {
+      // Reclaim a non-boss normal zombie slot so campaign bosses always spawn
+      slot = this.entities.find((e) => e.active && e.bossRole === 'none');
+      if (!slot) return false;
+      slot.active = false;
+      slot.state = 'dead';
+      slot.root.visible = false;
+    }
+    const ok = this.spawnEnemy('brute', round, spawnPoint, rng, difficulty);
+    if (!ok) return false;
+    const spawned =
+      this.entities.find((e) => e.active && e.type === 'brute' && e.bossRole === 'none') ?? slot;
+    spawned.bossRole = role;
+    const baseHp = calculateZombieHealth(Math.max(4, round), difficulty);
+    const diffMult = DIFFICULTY_PRESETS[difficulty]?.healthMult ?? 1.0;
+    if (role === 'warden') {
+      spawned.maxHealth = Math.round(baseHp * BALANCE.campaign.wardenHealthMult);
+      spawned.health = spawned.maxHealth;
+      spawned.moveSpeed = 2.65 * (DIFFICULTY_PRESETS[difficulty]?.speedMult ?? 1.0);
+      spawned.root.scale.set(1.44, 1.44, 1.44);
+      for (const sp of spawned.eyeHalos) {
+        (sp.material as THREE.SpriteMaterial).color.setHex(0xf97316);
+      }
+    } else {
+      spawned.maxHealth = Math.round(
+        (BALANCE.campaign.alphaBossBaseHealth + round * BALANCE.campaign.alphaBossPerRoundHealth) *
+          diffMult,
+      );
+      spawned.health = spawned.maxHealth;
+      spawned.moveSpeed = 2.85 * (DIFFICULTY_PRESETS[difficulty]?.speedMult ?? 1.0);
+      const s = BALANCE.campaign.alphaBossScale;
+      spawned.root.scale.set(s, s, s);
+      spawned.fungalGrowthMesh.visible = true;
+      for (const sp of spawned.eyeHalos) {
+        (sp.material as THREE.SpriteMaterial).color.setHex(0xfbbf24);
+      }
+    }
+    spawned.windowId = null;
+    spawned.state = 'chase';
+    spawned.root.updateMatrixWorld(true);
+    this.audio.playBruteChargeRoar(spawned.x, 1.6, spawned.z);
+    return true;
+  }
+
   public spawnEnemy(
     type: EnemyType,
     round: number,
     spawnPoint: SpawnPoint,
     rng: SeededRng,
+    difficulty: DifficultyId = 'survivor',
   ): boolean {
     const slot = this.entities.find((e) => !e.active);
     if (!slot) return false;
 
-    const baseHp = calculateZombieHealth(round);
+    const preset = DIFFICULTY_PRESETS[difficulty] ?? DIFFICULTY_PRESETS.survivor;
+    const baseHp = calculateZombieHealth(round, difficulty);
     let hp = baseHp;
     let speedClass: 'walk' | 'run' | 'sprint' = 'walk';
     let moveSpeed: number = BALANCE.enemies.shambler.walkSpeed;
@@ -918,10 +1072,12 @@ export class ZombieSystem {
       speedClass = 'run';
       moveSpeed = BALANCE.enemies.brute.speed;
     }
+    moveSpeed *= preset.speedMult;
 
     slot.id = this.nextZombieId++;
     slot.active = true;
     slot.type = type;
+    slot.bossRole = 'none';
     slot.speedClass = speedClass;
     slot.moveSpeed = moveSpeed;
     slot.health = hp;
@@ -930,20 +1086,40 @@ export class ZombieSystem {
     slot.woundedShown = false;
     slot.dissolveUniform.value = 0;
     slot.corpseTimer = 0;
+    slot.bloaterBeepTimer = 0;
     slot.attackCooldown = 0;
     slot.attackDealt = false;
     slot.chargeCooldown = 4.0;
     slot.hitReactTimer = 0;
     slot.hitReactZone = 'torso';
+    slot.hitFlashTimer = 0;
+    slot.hitFlashActive = false;
     slot.deathFallRoll = ((slot.id % 5) - 2) * 0.16;
+    slot.deathPitchTarget = -Math.PI * 0.48;
+    slot.deathRollTarget = slot.deathFallRoll;
+    slot.deathVx = 0;
+    slot.deathVz = 0;
     slot.staggerTimer = 0;
     slot.groanTimer = 1 + rng.next() * 4;
+    slot.stepSoundTimer = 0.25 + rng.next() * 0.35;
 
-    slot.x = spawnPoint.position.x + (rng.next() - 0.5) * 1.2;
+    const jitterX = spawnPoint.position.x + (rng.next() - 0.5) * 1.2;
+    const jitterZ = spawnPoint.position.z + (rng.next() - 0.5) * 1.2;
+    if (!spawnPoint.windowId && !this.nav.isWalkableWorld(jitterX, jitterZ)) {
+      slot.x = spawnPoint.position.x;
+      slot.z = spawnPoint.position.z;
+    } else {
+      slot.x = jitterX;
+      slot.z = jitterZ;
+    }
     slot.y = 0;
-    slot.z = spawnPoint.position.z + (rng.next() - 0.5) * 1.2;
+    slot.prevX = slot.x;
+    slot.prevZ = slot.z;
     slot.vx = 0;
     slot.vz = 0;
+    slot.kbVx = 0;
+    slot.kbVz = 0;
+    slot.strideBlend = 0;
     slot.lastProgressX = slot.x;
     slot.lastProgressZ = slot.z;
     slot.stuckTimer = 0;
@@ -972,17 +1148,24 @@ export class ZombieSystem {
       slot.bloaterCystsGroup.visible = false;
       slot.weakPointMesh.visible = false;
       slot.root.scale.set(1.0, 1.0, 1.0);
-      slot.spawnFogTimer = 0.75;
-      slot.spawnRiseTimer = 0;
+      slot.spawnFogTimer = 1.0;
+      slot.spawnRiseTimer = 0.4;
+      (slot.spawnFogRing.material as THREE.MeshBasicMaterial).color.setHex(0xef4444);
       slot.spawnFogRing.visible = true;
       slot.baseMaterials[0] = this.houndSkinMat;
       this.applyHoundMaterial(slot, this.houndSkinMat);
+      this.audio.playSpawnEruption(slot.x, 0.4, slot.z);
     } else {
       slot.humanoidGroup.visible = true;
       slot.houndGroup.visible = false;
-      slot.spawnFogTimer = 0;
-      slot.spawnRiseTimer = spawnPoint.windowId ? 0 : 0.45;
-      slot.spawnFogRing.visible = false;
+      const groundRise = !spawnPoint.windowId;
+      slot.spawnRiseTimer = groundRise ? 0.65 : 0;
+      slot.spawnFogTimer = groundRise ? 0.85 : 0;
+      (slot.spawnFogRing.material as THREE.MeshBasicMaterial).color.setHex(0xd97706);
+      slot.spawnFogRing.visible = groundRise;
+      if (groundRise) {
+        this.audio.playSpawnEruption(slot.x, 0.4, slot.z);
+      }
 
       slot.weakPointMesh.visible = type === 'brute';
       slot.bruteGearGroup.visible = type === 'brute';
@@ -1030,6 +1213,7 @@ export class ZombieSystem {
 
     slot.root.position.set(slot.x, slot.y, slot.z);
     slot.root.visible = true;
+    slot.root.updateMatrixWorld(true);
     return true;
   }
 
@@ -1166,16 +1350,16 @@ export class ZombieSystem {
     e.hitReactDirX = dirX;
     e.hitReactDirZ = dirZ;
     e.hitReactZone = hitZone;
+    e.hitFlashTimer = 0.065;
 
-    // Slight punchy knockback stagger away from bullet trajectory
-    if (e.type !== 'brute' && e.state === 'chase') {
-      const kb = hitZone === 'head' ? 0.18 : 0.1;
-      const kx = e.x + dirX * kb;
-      const kz = e.z + dirZ * kb;
-      if (this.nav.isWalkableWorld(kx, kz)) {
-        e.x = kx;
-        e.z = kz;
-      }
+    // Velocity-based knockback stagger away from bullet/melee trajectory
+    const dirLen = Math.hypot(dirX, dirZ);
+    if (dirLen > 0.001 && e.state !== 'climb_in') {
+      const ndx = dirX / dirLen;
+      const ndz = dirZ / dirLen;
+      const kbSpeed = e.type === 'brute' ? 0.85 : hitZone === 'head' ? 3.8 : 2.6;
+      e.kbVx = THREE.MathUtils.clamp(e.kbVx + ndx * kbSpeed, -6.5, 6.5);
+      e.kbVz = THREE.MathUtils.clamp(e.kbVz + ndz * kbSpeed, -6.5, 6.5);
     }
 
     // Show heavy chest wound when below 55% health
@@ -1198,7 +1382,7 @@ export class ZombieSystem {
     }
 
     if (e.type !== 'brute') {
-      e.staggerTimer = Math.max(e.staggerTimer, hitZone === 'head' ? 0.2 : 0.14);
+      e.staggerTimer = Math.max(e.staggerTimer, hitZone === 'head' ? 0.22 : 0.14);
     }
 
     if (e.health <= 0) {
@@ -1208,7 +1392,7 @@ export class ZombieSystem {
         e.headStumpMesh.visible = true;
       }
       const wasBloater = e.type === 'bloater';
-      this.killEntity(e);
+      this.killEntity(e, dirX, dirZ, hitZone === 'head' ? 3.8 : 2.7);
       return {
         killed: true,
         enemyType: e.type,
@@ -1248,6 +1432,9 @@ export class ZombieSystem {
       const dz = e.z - cz;
       const dSq = dx * dx + dy * dy + dz * dz;
       if (dSq > rSq) continue;
+      const distHoriz = Math.hypot(dx, dz);
+      const rdx = distHoriz > 0.01 ? dx / distHoriz : Math.sin(e.yaw);
+      const rdz = distHoriz > 0.01 ? dz / distHoriz : Math.cos(e.yaw);
       const t = Math.sqrt(dSq) / radius;
       const dmg = instaKill
         ? e.type === 'brute'
@@ -1255,12 +1442,16 @@ export class ZombieSystem {
           : e.health + 999
         : THREE.MathUtils.lerp(innerDamage, outerDamage, t);
       e.health -= dmg;
+      e.hitFlashTimer = 0.075;
       if (e.health <= 0) {
-        this.killEntity(e);
+        this.killEntity(e, rdx, rdz, 5.4 * (1 - t * 0.4));
         onKill(e);
         kills++;
       } else {
-        e.staggerTimer = 0.28;
+        e.staggerTimer = 0.32;
+        const push = (e.type === 'brute' ? 2.2 : 5.2) * (1 - t * 0.5);
+        e.kbVx = THREE.MathUtils.clamp(e.kbVx + rdx * push, -7.5, 7.5);
+        e.kbVz = THREE.MathUtils.clamp(e.kbVz + rdz * push, -7.5, 7.5);
       }
     }
     return kills;
@@ -1275,8 +1466,14 @@ export class ZombieSystem {
       const dSq = dx * dx + dz * dz;
       if (dSq < rSq && dSq > 0.001) {
         const d = Math.sqrt(dSq);
-        e.x += (dx / d) * strength;
-        e.z += (dz / d) * strength;
+        const nx = e.x + (dx / d) * strength;
+        const nz = e.z + (dz / d) * strength;
+        if (this.nav.isWalkableWorld(nx, nz)) {
+          e.x = nx;
+          e.z = nz;
+        }
+        e.kbVx += (dx / d) * 4.5;
+        e.kbVz += (dz / d) * 4.5;
         e.staggerTimer = 1.4;
       }
     }
@@ -1285,6 +1482,10 @@ export class ZombieSystem {
   public killAllNonBoss(onKill: (e: ZombieEntity) => void): void {
     for (const e of this.entities) {
       if (!e.active || e.state === 'dying' || e.state === 'dead') continue;
+      if (e.bossRole !== 'none') {
+        e.health = Math.max(1, e.health - e.maxHealth * 0.15);
+        continue;
+      }
       if (e.type === 'brute') {
         e.health -= e.maxHealth * 0.4;
         if (e.health <= 0) {
@@ -1328,10 +1529,31 @@ export class ZombieSystem {
     for (const m of e.rigMeshes.bloodMeshes) m.material = mats[3];
   }
 
-  private killEntity(e: ZombieEntity): void {
+  private killEntity(e: ZombieEntity, dirX = 0, dirZ = 0, impulseSpeed = 2.4): void {
     e.state = 'dying';
     e.stateTimer = 0;
     e.corpseTimer = 0;
+    e.hitFlashTimer = 0;
+    e.hitFlashActive = false;
+    if (e.bossRole !== 'none') {
+      const role = e.bossRole;
+      e.bossRole = 'none';
+      this.onBossKilled?.(role, e.x, e.y + 1.0, e.z);
+    }
+
+    const fall = computeDirectionalFall(
+      dirX,
+      dirZ,
+      e.yaw,
+      impulseSpeed,
+      ((e.id % 5) - 2) * 0.14,
+    );
+    e.deathPitchTarget = fall.targetPitchX;
+    e.deathRollTarget = fall.targetRollZ;
+    e.deathVx = fall.slideVx + e.kbVx * 0.5;
+    e.deathVz = fall.slideVz + e.kbVz * 0.5;
+    e.kbVx = 0;
+    e.kbVz = 0;
 
     if (!e.dissolveMaterials) {
       e.dissolveMaterials = [
@@ -1362,25 +1584,57 @@ export class ZombieSystem {
     }
   }
 
+  public hasCombatLineOfSight(e: ZombieEntity, playerPos: THREE.Vector3): boolean {
+    const playerFeetY = playerPos.y - BALANCE.player.capsuleHeight * 0.5;
+    const lowStartY = e.y + (e.type === 'hound' || e.isCrawler ? 0.38 : 0.58);
+    const lowEndY = playerFeetY + (e.type === 'hound' || e.isCrawler ? 0.42 : 0.58);
+    this.tmpZombieEye.set(e.x, lowStartY, e.z);
+    this.tmpPlayerEye.set(playerPos.x, lowEndY, playerPos.z);
+    if (!this.bvh.hasLineOfSight(this.tmpZombieEye, this.tmpPlayerEye)) {
+      return false;
+    }
+
+    const highStartY = e.y + (e.type === 'hound' || e.isCrawler ? 0.62 : 1.25);
+    const highEndY = playerFeetY + (e.type === 'hound' || e.isCrawler ? 0.82 : 1.25);
+    this.tmpZombieEye.set(e.x, highStartY, e.z);
+    this.tmpPlayerEye.set(playerPos.x, highEndY, playerPos.z);
+    return this.bvh.hasLineOfSight(this.tmpZombieEye, this.tmpPlayerEye);
+  }
+
   public update(
     dt: number,
     playerPos: THREE.Vector3,
     windows: Map<string, WindowBarricade>,
     unlockedZones: Set<ZoneId>,
     spawnPoints: SpawnPoint[],
-    onMeleeHitPlayer: (damage: number, ax: number, az: number) => void,
+    onMeleeHitPlayer: (damage: number, ax: number, az: number, source: DamageSource) => void,
     onBloaterExplode: (x: number, y: number, z: number) => void,
+    onPlayerShove?: (vx: number, vz: number) => void,
   ): void {
     this.aiFrameCounter++;
+    let anyFusingBloater = false;
 
+    let activeAttackers = 0;
     for (let i = 0; i < MAX_ZOMBIES; i++) {
       const e = this.entities[i]!;
       const alive = e.active && e.state !== 'dying' && e.state !== 'dead';
       this.activeFlags[i] = alive ? 1 : 0;
       this.posX[i] = e.x;
       this.posZ[i] = e.z;
+      if (alive && e.state === 'attack') {
+        activeAttackers++;
+      }
+      if (alive && e.type === 'bloater' && e.state === 'bloater_fuse') {
+        anyFusingBloater = true;
+      }
     }
+    this.bloaterCystMat.emissiveIntensity = anyFusingBloater
+      ? 2.4 + Math.sin(performance.now() * 0.028) * 1.6
+      : 1.25;
     this.nav.rebuildSpatialHash(this.posX, this.posZ, this.activeFlags, MAX_ZOMBIES);
+
+    let shoveTotalX = 0;
+    let shoveTotalZ = 0;
 
     for (let i = 0; i < MAX_ZOMBIES; i++) {
       const e = this.entities[i]!;
@@ -1388,10 +1642,10 @@ export class ZombieSystem {
 
       if (e.spawnFogTimer > 0) {
         e.spawnFogTimer -= dt;
-        const p = 1 - Math.max(0, e.spawnFogTimer / 0.75);
+        const p = 1 - Math.max(0, e.spawnFogTimer / 1.0);
         const ringMat = e.spawnFogRing.material as THREE.MeshBasicMaterial;
-        ringMat.opacity = (1 - p) * 0.55;
-        const s = 0.7 + p * 2.1;
+        ringMat.opacity = (1 - p) * 0.65;
+        const s = 0.7 + p * 2.2;
         e.spawnFogRing.scale.set(s, s, 1);
         if (e.spawnFogTimer <= 0) {
           e.spawnFogRing.visible = false;
@@ -1404,16 +1658,57 @@ export class ZombieSystem {
 
       if (e.state === 'dying') {
         e.stateTimer += dt;
-        const fallT = Math.min(1, e.stateTimer / 0.38);
-        const ease = 1 - Math.pow(1 - fallT, 2);
-        e.bodyGroup.rotation.x = THREE.MathUtils.lerp(0, -Math.PI * 0.48, ease);
-        e.bodyGroup.rotation.z = THREE.MathUtils.lerp(0, e.deathFallRoll, ease);
-        e.bodyGroup.position.y = THREE.MathUtils.lerp(0, e.type === 'hound' ? 0.14 : 0.22, ease);
-        e.torsoPivot.rotation.x = THREE.MathUtils.lerp(e.torsoPivot.rotation.x, 0.45, ease);
-        e.leftShin.rotation.x = THREE.MathUtils.lerp(e.leftShin.rotation.x, 0.85, ease);
-        e.rightShin.rotation.x = THREE.MathUtils.lerp(e.rightShin.rotation.x, 0.85, ease);
-        e.leftArm.rotation.x = THREE.MathUtils.lerp(e.leftArm.rotation.x, -0.35, ease * 0.6);
-        e.rightArm.rotation.x = THREE.MathUtils.lerp(e.rightArm.rotation.x, -0.25, ease * 0.6);
+        if (Math.hypot(e.deathVx, e.deathVz) > 0.05) {
+          const dnx = e.x + e.deathVx * dt;
+          const dnz = e.z + e.deathVz * dt;
+          if (this.nav.isWalkableWorld(dnx, dnz)) {
+            e.x = dnx;
+            e.z = dnz;
+          } else {
+            e.deathVx *= 0.25;
+            e.deathVz *= 0.25;
+          }
+          const damp = Math.exp(-7.5 * dt);
+          e.deathVx *= damp;
+          e.deathVz *= damp;
+        }
+
+        const fallT = Math.min(1, e.stateTimer / 0.36);
+        const ease = 1 - Math.pow(1 - fallT, 2.2);
+        const fallingBack = e.deathPitchTarget > 0;
+        e.bodyGroup.rotation.x = THREE.MathUtils.lerp(0, e.deathPitchTarget, ease);
+        e.bodyGroup.rotation.z = THREE.MathUtils.lerp(0, e.deathRollTarget, ease);
+        e.bodyGroup.position.y = THREE.MathUtils.lerp(
+          0,
+          e.type === 'hound' ? 0.14 : fallingBack ? 0.18 : 0.22,
+          ease,
+        );
+        e.torsoPivot.rotation.x = THREE.MathUtils.lerp(
+          e.torsoPivot.rotation.x,
+          fallingBack ? -0.25 : 0.48,
+          ease,
+        );
+        e.leftShin.rotation.x = THREE.MathUtils.lerp(
+          e.leftShin.rotation.x,
+          fallingBack ? 0.25 : 0.9,
+          ease,
+        );
+        e.rightShin.rotation.x = THREE.MathUtils.lerp(
+          e.rightShin.rotation.x,
+          fallingBack ? 0.4 : 0.85,
+          ease,
+        );
+        e.leftArm.rotation.x = THREE.MathUtils.lerp(
+          e.leftArm.rotation.x,
+          fallingBack ? -1.45 : -0.35,
+          ease * 0.7,
+        );
+        e.rightArm.rotation.x = THREE.MathUtils.lerp(
+          e.rightArm.rotation.x,
+          fallingBack ? -1.15 : -0.25,
+          ease * 0.7,
+        );
+        e.root.position.set(e.x, e.y, e.z);
         e.contactShadow.visible = e.corpseTimer < 1.2;
         e.corpseTimer += dt;
         if (e.corpseTimer > BALANCE.enemies.shambler.corpseFadeDelay) {
@@ -1427,18 +1722,62 @@ export class ZombieSystem {
             e.root.visible = false;
           }
         }
+        e.root.updateMatrixWorld(true);
         continue;
       }
 
+      e.prevX = e.x;
+      e.prevZ = e.z;
       e.attackCooldown = Math.max(0, e.attackCooldown - dt);
       e.chargeCooldown = Math.max(0, e.chargeCooldown - dt);
       e.hitReactTimer = Math.max(0, e.hitReactTimer - dt);
       e.staggerTimer = Math.max(0, e.staggerTimer - dt);
+
+      // Update brief emissive hit-flash feedback
+      if (e.hitFlashTimer > 0) {
+        e.hitFlashTimer = Math.max(0, e.hitFlashTimer - dt);
+        if (!e.hitFlashActive) {
+          e.hitFlashActive = true;
+          if (e.type === 'hound') {
+            this.applyHoundMaterial(e, this.hitFlashSkinMat);
+          } else {
+            for (const m of e.rigMeshes.skinMeshes) m.material = this.hitFlashSkinMat;
+            for (const m of e.rigMeshes.clothMeshes) m.material = this.hitFlashClothMat;
+          }
+        }
+      } else if (e.hitFlashActive) {
+        e.hitFlashActive = false;
+        if (e.type === 'hound') {
+          this.applyHoundMaterial(e, e.baseMaterials[0]);
+        } else {
+          this.applyMaterialsToRig(e, e.baseMaterials);
+        }
+      }
+
+      // Integrate velocity knockback impulse with ground friction
+      if (Math.hypot(e.kbVx, e.kbVz) > 0.04) {
+        const kx = e.x + e.kbVx * dt;
+        const kz = e.z + e.kbVz * dt;
+        if (this.nav.isWalkableWorld(kx, kz)) {
+          e.x = kx;
+          e.z = kz;
+        } else {
+          if (this.nav.isWalkableWorld(kx, e.z)) e.x = kx;
+          else if (this.nav.isWalkableWorld(e.x, kz)) e.z = kz;
+        }
+        const kbDamp = Math.exp(-10.5 * dt);
+        e.kbVx *= kbDamp;
+        e.kbVz *= kbDamp;
+      } else {
+        e.kbVx = 0;
+        e.kbVz = 0;
+      }
+
       e.groanTimer -= dt;
       if (e.groanTimer <= 0) {
         e.groanTimer = 3.5 + Math.random() * 5.0;
         const distSq = (e.x - playerPos.x) ** 2 + (e.z - playerPos.z) ** 2;
-        if (distSq < 28 * 28) {
+        if (distSq < 28 * 28 && this.hasCombatLineOfSight(e, playerPos)) {
           this.audio.playZombieSound(
             e.type === 'hound' ? 'hound' : e.type === 'brute' ? 'brute' : 'groan',
             e.x,
@@ -1451,8 +1790,16 @@ export class ZombieSystem {
       const dxToP = playerPos.x - e.x;
       const dzToP = playerPos.z - e.z;
       const distToP = Math.hypot(dxToP, dzToP);
+      const playerFeetY = playerPos.y - BALANCE.player.capsuleHeight * 0.5;
 
-      if (e.state === 'approach_window' && e.windowId) {
+      // Ground-emerging spawns must visibly finish rising before chasing or swinging
+      if (e.spawnRiseTimer > 0 && e.state === 'chase') {
+        const targetYaw = Math.atan2(dxToP, dzToP);
+        let diff = targetYaw - e.yaw;
+        while (diff > Math.PI) diff -= Math.PI * 2;
+        while (diff < -Math.PI) diff += Math.PI * 2;
+        e.yaw += diff * Math.min(1, dt * 8);
+      } else if (e.state === 'approach_window' && e.windowId) {
         const win = windows.get(e.windowId);
         if (!win) {
           e.state = 'chase';
@@ -1463,8 +1810,15 @@ export class ZombieSystem {
           if (wd > 0.65) {
             e.vx = (wx / wd) * e.moveSpeed;
             e.vz = (wz / wd) * e.moveSpeed;
-            e.x += e.vx * dt;
-            e.z += e.vz * dt;
+            const nx = e.x + e.vx * dt;
+            const nz = e.z + e.vz * dt;
+            if (wd < 1.8 || this.nav.isWalkableWorld(nx, nz)) {
+              e.x = nx;
+              e.z = nz;
+            } else {
+              if (this.nav.isWalkableWorld(nx, e.z)) e.x = nx;
+              else if (this.nav.isWalkableWorld(e.x, nz)) e.z = nz;
+            }
             e.yaw = Math.atan2(wx, wz);
           } else {
             e.state = win.intactCount > 0 ? 'tear_board' : 'climb_in';
@@ -1509,7 +1863,13 @@ export class ZombieSystem {
         }
       } else if (e.state === 'bloater_fuse') {
         e.stateTimer += dt;
-        const pulse = 1 + Math.sin(e.stateTimer * 24) * 0.14;
+        e.bloaterBeepTimer -= dt;
+        const fuseFrac = Math.min(1, e.stateTimer / BALANCE.enemies.bloater.fuseTime);
+        if (e.bloaterBeepTimer <= 0) {
+          e.bloaterBeepTimer = 0.24;
+          this.audio.playBloaterFuseWarning(fuseFrac, e.x, e.y + 1.2, e.z);
+        }
+        const pulse = 1 + Math.sin(e.stateTimer * 26) * 0.16;
         e.root.scale.set(1.36 * pulse, 1.04 * pulse, 1.38 * pulse);
         if (e.stateTimer >= BALANCE.enemies.bloater.fuseTime) {
           this.killEntity(e);
@@ -1535,8 +1895,31 @@ export class ZombieSystem {
         } else {
           e.state = 'chase';
         }
-        if (distToP < BALANCE.enemies.brute.meleeRange) {
-          onMeleeHitPlayer(BALANCE.enemies.brute.meleeDamage, e.x, e.z);
+        const chargeStrikes = canZombieStrikePlayer({
+          isRising: e.spawnRiseTimer > 0 || !e.root.visible,
+          isStaggered: e.staggerTimer > 0,
+          horizontalDist: distToP,
+          maxReach: BALANCE.enemies.brute.meleeRange,
+          zombieY: e.y,
+          zombieBodyY: e.bodyGroup.position.y,
+          playerFeetY,
+          zombieYaw: e.yaw,
+          toPlayerX: dxToP,
+          toPlayerZ: dzToP,
+          hasDualHeightLos: this.hasCombatLineOfSight(e, playerPos),
+        });
+        if (chargeStrikes) {
+          const chargeSource: DamageSource =
+            e.bossRole === 'alpha_boss'
+              ? 'alpha_boss'
+              : e.bossRole === 'warden'
+                ? 'warden'
+                : 'brute_charge';
+          const chargeDmg =
+            e.bossRole === 'alpha_boss'
+              ? BALANCE.campaign.alphaBossDamage
+              : BALANCE.enemies.brute.meleeDamage;
+          onMeleeHitPlayer(chargeDmg, e.x, e.z, chargeSource);
           e.state = 'chase';
           e.attackCooldown = 1.4;
         } else if (e.stateTimer >= BALANCE.enemies.brute.chargeDuration) {
@@ -1544,66 +1927,172 @@ export class ZombieSystem {
         }
       } else if (e.state === 'attack') {
         e.stateTimer += dt;
-        e.yaw = Math.atan2(dxToP, dzToP);
         const windup =
           e.type === 'hound'
             ? BALANCE.enemies.hound.attackWindup
             : BALANCE.enemies.shambler.attackWindup;
         const hitTime = windup * 0.52;
-        if (!e.attackDealt && e.stateTimer >= hitTime) {
-          e.attackDealt = true;
-          const reach =
-            e.type === 'brute'
-              ? BALANCE.enemies.brute.meleeRange + 0.3
-              : BALANCE.enemies.shambler.meleeRange + 0.25;
-          if (distToP <= reach && Math.abs(playerPos.y - 0.9 - e.y) < 1.9) {
-            const dmg =
+        const frac = e.stateTimer / windup;
+
+        // Shooting/staggering a zombie mid-windup interrupts its swing cleanly
+        if (!e.attackDealt && e.staggerTimer > 0) {
+          e.state = 'chase';
+          e.attackCooldown = 0.45;
+        } else {
+          // Track target only during early windup, then commit swing direction so sliding/strafing can dodge
+          if (frac < 0.35) {
+            const targetYaw = Math.atan2(dxToP, dzToP);
+            let diff = targetYaw - e.yaw;
+            while (diff > Math.PI) diff -= Math.PI * 2;
+            while (diff < -Math.PI) diff += Math.PI * 2;
+            e.yaw += diff * Math.min(1, dt * 8.5);
+          }
+
+          // Slight forward lunge during the strike window without slipping into vertical under-feet blindspot
+          if (frac >= 0.44 && frac <= 0.62 && distToP > 1.30 && e.staggerTimer <= 0) {
+            const lungeStep = 1.55 * dt;
+            const lx = e.x + Math.sin(e.yaw) * lungeStep;
+            const lz = e.z + Math.cos(e.yaw) * lungeStep;
+            if (this.nav.isWalkableWorld(lx, lz)) {
+              e.x = lx;
+              e.z = lz;
+            }
+          }
+
+          if (!e.attackDealt && e.stateTimer >= hitTime) {
+            e.attackDealt = true;
+            const reach =
+              e.type === 'brute'
+                ? e.bossRole === 'alpha_boss'
+                  ? 2.45
+                  : 2.25
+                : e.type === 'hound'
+                  ? 1.88
+                  : e.isCrawler
+                    ? 1.80
+                    : 1.86;
+            const strikes = canZombieStrikePlayer({
+              isRising: e.spawnRiseTimer > 0 || !e.root.visible,
+              isStaggered: e.staggerTimer > 0,
+              horizontalDist: distToP,
+              maxReach: reach,
+              zombieY: e.y,
+              zombieBodyY: e.bodyGroup.position.y,
+              playerFeetY,
+              zombieYaw: e.yaw,
+              toPlayerX: dxToP,
+              toPlayerZ: dzToP,
+              hasDualHeightLos: this.hasCombatLineOfSight(e, playerPos),
+            });
+            if (strikes) {
+              const dmg =
+                e.type === 'hound'
+                  ? BALANCE.enemies.hound.meleeDamage
+                  : e.type === 'brute'
+                    ? e.bossRole === 'alpha_boss'
+                      ? BALANCE.campaign.alphaBossDamage
+                      : BALANCE.enemies.brute.meleeDamage
+                    : BALANCE.enemies.shambler.meleeDamage;
+              const hitSource: DamageSource =
+                e.type === 'hound'
+                  ? 'hound'
+                  : e.type === 'brute'
+                    ? e.bossRole === 'alpha_boss'
+                      ? 'alpha_boss'
+                      : e.bossRole === 'warden'
+                        ? 'warden'
+                        : 'brute'
+                    : 'shambler';
+              onMeleeHitPlayer(dmg, e.x, e.z, hitSource);
+            }
+          }
+          if (e.stateTimer >= windup) {
+            e.state = 'chase';
+            e.attackCooldown =
               e.type === 'hound'
-                ? BALANCE.enemies.hound.meleeDamage
-                : e.type === 'brute'
-                  ? BALANCE.enemies.brute.meleeDamage
-                  : BALANCE.enemies.shambler.meleeDamage;
-            onMeleeHitPlayer(dmg, e.x, e.z);
+                ? BALANCE.enemies.hound.attackCooldown
+                : BALANCE.enemies.shambler.attackCooldown;
           }
         }
-        if (e.stateTimer >= windup) {
-          e.state = 'chase';
-          e.attackCooldown =
-            e.type === 'hound'
-              ? BALANCE.enemies.hound.attackCooldown
-              : BALANCE.enemies.shambler.attackCooldown;
-        }
       } else if (e.state === 'chase') {
-        if (e.type === 'bloater' && distToP <= BALANCE.enemies.bloater.meleeRange) {
+        if (
+          e.root.visible &&
+          e.bodyGroup.position.y >= -0.08 &&
+          e.type === 'bloater' &&
+          distToP <= BALANCE.enemies.bloater.meleeRange &&
+          Math.abs(playerFeetY - e.y) < 1.55 &&
+          this.hasCombatLineOfSight(e, playerPos)
+        ) {
           e.state = 'bloater_fuse';
           e.stateTimer = 0;
+          e.bloaterBeepTimer = 0;
         } else if (
+          e.root.visible &&
+          e.bodyGroup.position.y >= -0.08 &&
           e.type === 'brute' &&
           e.chargeCooldown <= 0 &&
           distToP > 4.5 &&
-          distToP < 14
+          distToP < 14 &&
+          Math.abs(playerFeetY - e.y) < 1.55 &&
+          this.hasCombatLineOfSight(e, playerPos)
         ) {
           e.state = 'brute_telegraph';
           e.stateTimer = 0;
           e.chargeCooldown = BALANCE.enemies.brute.chargeCooldown;
-          this.audio.playZombieSound('brute', e.x, 1.5, e.z);
+          this.audio.playBruteChargeRoar(e.x, 1.5, e.z);
         } else {
-          const meleeRange =
+          const triggerRange =
             e.type === 'hound'
-              ? BALANCE.enemies.hound.meleeRange
-              : e.type === 'brute'
-                ? BALANCE.enemies.brute.meleeRange
-                : BALANCE.enemies.shambler.meleeRange;
-          if (distToP <= meleeRange && e.attackCooldown <= 0) {
+              ? 1.82
+              : e.isCrawler
+                ? 1.72
+                : e.type === 'brute'
+                  ? 2.22
+                  : 1.78;
+          if (
+            e.root.visible &&
+            e.bodyGroup.position.y >= -0.08 &&
+            distToP <= triggerRange &&
+            e.attackCooldown <= 0 &&
+            activeAttackers < 2 &&
+            Math.abs(playerFeetY - e.y) < 1.55 &&
+            this.hasCombatLineOfSight(e, playerPos)
+          ) {
             e.state = 'attack';
             e.stateTimer = 0;
             e.attackDealt = false;
+            activeAttackers++;
             this.audio.playZombieSound(e.type === 'hound' ? 'hound' : 'attack', e.x, 1.4, e.z);
           } else if (e.staggerTimer <= 0) {
-            if (distToP < 1.35 && this.nav.isWalkableWorld(e.x, e.z)) {
+            if (
+              (e.speedClass === 'run' || e.speedClass === 'sprint' || e.type === 'hound') &&
+              distToP < 7.2 &&
+              this.hasCombatLineOfSight(e, playerPos)
+            ) {
+              e.stepSoundTimer -= dt;
+              if (e.stepSoundTimer <= 0) {
+                e.stepSoundTimer = e.speedClass === 'sprint' ? 0.28 : 0.4;
+                this.audio.playZombieSound('footstep', e.x, 0.25, e.z);
+              }
+            }
+
+            const curWalkable = this.nav.isWalkableWorld(e.x, e.z);
+            if (distToP < 2.2 && curWalkable) {
               const inv = 1 / Math.max(0.01, distToP);
-              this.flowSample.x = dxToP * inv;
-              this.flowSample.z = dzToP * inv;
+              let fx = dxToP * inv;
+              let fz = dzToP * inv;
+              // Gentle flanking spread in close quarters so zombies surround cleanly instead of stacking
+              if (distToP > 1.2 && distToP < 2.15) {
+                const flankAngle = ((e.id % 3) - 1) * 0.28;
+                const ca = Math.cos(flankAngle);
+                const sa = Math.sin(flankAngle);
+                const rx = fx * ca - fz * sa;
+                const rz = fx * sa + fz * ca;
+                fx = rx;
+                fz = rz;
+              }
+              this.flowSample.x = fx;
+              this.flowSample.z = fz;
             } else {
               this.nav.sampleFlow(e.x, e.z, this.flowSample);
             }
@@ -1625,11 +2114,13 @@ export class ZombieSystem {
               dirZ /= len;
             }
 
-            e.vx = dirX * e.moveSpeed;
-            e.vz = dirZ * e.moveSpeed;
+            // Pace down slightly while waiting on attack cooldown right outside standoff
+            const paceScale = distToP < 1.48 && e.attackCooldown > 0 ? 0.35 : 1.0;
+            e.vx = dirX * e.moveSpeed * paceScale;
+            e.vz = dirZ * e.moveSpeed * paceScale;
             const nx = e.x + e.vx * dt;
             const nz = e.z + e.vz * dt;
-            if (this.nav.isWalkableWorld(nx, nz)) {
+            if (!curWalkable || this.nav.isWalkableWorld(nx, nz)) {
               e.x = nx;
               e.z = nz;
             } else {
@@ -1638,11 +2129,12 @@ export class ZombieSystem {
             }
 
             if (len > 0.05) {
-              const targetYaw = Math.atan2(dirX, dirZ);
+              const targetYaw =
+                distToP < 1.65 ? Math.atan2(dxToP, dzToP) : Math.atan2(dirX, dirZ);
               let diff = targetYaw - e.yaw;
               while (diff > Math.PI) diff -= Math.PI * 2;
               while (diff < -Math.PI) diff += Math.PI * 2;
-              e.yaw += diff * Math.min(1, dt * 8.5);
+              e.yaw += diff * Math.min(1, dt * 9.5);
             }
           }
         }
@@ -1652,7 +2144,7 @@ export class ZombieSystem {
           e.lastProgressX = e.x;
           e.lastProgressZ = e.z;
           e.stuckTimer = 0;
-        } else {
+        } else if (e.staggerTimer <= 0 && !(distToP < 1.5 && e.attackCooldown > 0)) {
           e.stuckTimer += dt;
           if (e.stuckTimer >= BALANCE.enemies.shambler.stuckTimeout) {
             e.stuckTimer = 0;
@@ -1661,13 +2153,92 @@ export class ZombieSystem {
         }
       }
 
+      // Solid Player-Zombie Standoff: prevent zombie from clipping inside player capsule/under-feet blindspot
+      if (e.state !== 'climb_in' && e.state !== 'tear_board' && e.state !== 'approach_window') {
+        const minStandoff =
+          e.type === 'hound'
+            ? 1.38
+            : e.isCrawler
+              ? 1.40
+              : e.type === 'brute'
+                ? 1.48
+                : e.type === 'bloater'
+                  ? 1.32
+                  : 1.24;
+        const standoff = resolvePlayerZombieStandoff(
+          e.x,
+          e.z,
+          e.yaw,
+          playerPos.x,
+          playerPos.z,
+          minStandoff,
+          (wx, wz) => this.nav.isWalkableWorld(wx, wz),
+        );
+        if (standoff.pushed) {
+          e.x = standoff.nx;
+          e.z = standoff.nz;
+          shoveTotalX += standoff.shoveX;
+          shoveTotalZ += standoff.shoveZ;
+        }
+      }
+    }
+
+    if (onPlayerShove && (Math.abs(shoveTotalX) > 0.01 || Math.abs(shoveTotalZ) > 0.01)) {
+      onPlayerShove(shoveTotalX * dt * 2.6, shoveTotalZ * dt * 2.6);
+    }
+
+    // Hard Zombie-Zombie Circle Separation Pass so hordes stay readable and distinct
+    const minPairSep = 0.7;
+    const minPairSepSq = minPairSep * minPairSep;
+    for (let i = 0; i < MAX_ZOMBIES; i++) {
+      const a = this.entities[i]!;
+      if (!a.active || a.state === 'dying' || a.state === 'dead' || a.state === 'climb_in') continue;
+      for (let j = i + 1; j < MAX_ZOMBIES; j++) {
+        const b = this.entities[j]!;
+        if (!b.active || b.state === 'dying' || b.state === 'dead' || b.state === 'climb_in') continue;
+        const dx = b.x - a.x;
+        const dz = b.z - a.z;
+        const dSq = dx * dx + dz * dz;
+        if (dSq < minPairSepSq) {
+          const d = Math.sqrt(dSq);
+          const nx = d > 0.001 ? dx / d : Math.cos(i);
+          const nz = d > 0.001 ? dz / d : Math.sin(i);
+          const push = (minPairSep - d) * 0.45;
+          const ax = a.x - nx * push;
+          const az = a.z - nz * push;
+          const bx = b.x + nx * push;
+          const bz = b.z + nz * push;
+          if (this.nav.isWalkableWorld(ax, az)) {
+            a.x = ax;
+            a.z = az;
+          }
+          if (this.nav.isWalkableWorld(bx, bz)) {
+            b.x = bx;
+            b.z = bz;
+          }
+        }
+      }
+    }
+
+    // Final transform sync & speed-matched rig animation
+    for (let i = 0; i < MAX_ZOMBIES; i++) {
+      const e = this.entities[i]!;
+      if (!e.active || e.state === 'dying' || e.state === 'dead') continue;
       e.root.position.set(e.x, e.y, e.z);
       e.root.rotation.y = e.yaw;
 
+      const distToP = Math.hypot(playerPos.x - e.x, playerPos.z - e.z);
       const isFar = distToP > BALANCE.perf.lodDistance;
-      if (!isFar || (this.aiFrameCounter + i) % 3 === 0) {
+      if (
+        !isFar ||
+        e.spawnRiseTimer > 0 ||
+        e.state === 'attack' ||
+        e.isCrawler ||
+        (this.aiFrameCounter + i) % 3 === 0
+      ) {
         const animDt = isFar ? dt * 3 : dt;
-        this.animateZombieRig(e, animDt);
+        const movedDist = Math.hypot(e.x - e.prevX, e.z - e.prevZ);
+        this.animateZombieRig(e, animDt, movedDist, dt);
       }
       e.root.updateMatrixWorld(true);
     }
@@ -1680,16 +2251,8 @@ export class ZombieSystem {
     spawnPoints: SpawnPoint[],
   ): void {
     const valid = spawnPoints.filter((s) => unlockedZones.has(s.zone));
-    if (valid.length === 0) return;
-    let best = valid[0]!;
-    let bestDist = -1;
-    for (const sp of valid) {
-      const d = (sp.position.x - playerPos.x) ** 2 + (sp.position.z - playerPos.z) ** 2;
-      if (d > bestDist && d > 100) {
-        bestDist = d;
-        best = sp;
-      }
-    }
+    const best = selectSafeSpawnPoint(valid, playerPos.x, playerPos.z, 0.5, 14, 8.5);
+    if (!best) return;
     e.x = best.position.x;
     e.z = best.position.z;
     e.y = 0;
@@ -1699,63 +2262,117 @@ export class ZombieSystem {
     this.stuckTeleportCount++;
     if (best.windowId && e.type !== 'hound') {
       e.windowId = best.windowId;
+      e.spawnRiseTimer = 0;
+      e.spawnFogTimer = 0;
+      e.spawnFogRing.visible = false;
       e.state = 'approach_window';
     } else {
       e.windowId = null;
+      e.spawnRiseTimer = 0.65;
+      e.spawnFogTimer = 0.85;
+      e.spawnFogRing.visible = true;
+      this.audio.playSpawnEruption(e.x, 0.4, e.z);
       e.state = 'chase';
     }
+    e.root.position.set(e.x, e.y, e.z);
+    e.root.updateMatrixWorld(true);
   }
 
-  private animateZombieRig(e: ZombieEntity, dt: number): void {
+  private animateZombieRig(e: ZombieEntity, dt: number, movedDist: number, simDt: number): void {
+    const actualSpeed = simDt > 0 ? movedDist / simDt : 0;
+
     if (e.type === 'hound') {
-      e.animPhase += dt * 14.0;
+      const speedRatio = THREE.MathUtils.clamp(actualSpeed / Math.max(1, e.moveSpeed), 0.25, 1.35);
+      e.animPhase += dt * (11.5 * speedRatio);
       const g = Math.sin(e.animPhase);
       const c = Math.cos(e.animPhase);
+      if (e.state === 'attack') {
+        const frac = THREE.MathUtils.clamp(
+          e.stateTimer / BALANCE.enemies.hound.attackWindup,
+          0,
+          1,
+        );
+        const pounce = Math.sin(frac * Math.PI);
+        e.bodyGroup.position.y = pounce * 0.48;
+        e.bodyGroup.rotation.x = frac < 0.4 ? 0.22 : -0.32 * pounce;
+        e.houndHead.rotation.x = -0.35 + pounce * 0.25;
+        e.houndLegs[0].rotation.x = -0.65 * pounce;
+        e.houndLegs[1].rotation.x = -0.65 * pounce;
+        e.houndLegs[2].rotation.x = 0.65 * pounce;
+        e.houndLegs[3].rotation.x = 0.65 * pounce;
+        for (const sp of e.houndEyeHalos) {
+          const hs = 0.16 + pounce * 0.1;
+          sp.scale.set(hs, hs, 1);
+        }
+        return;
+      }
       e.houndLegs[0].rotation.x = g * 0.78;
       e.houndLegs[1].rotation.x = g * 0.78 + 0.18;
       e.houndLegs[2].rotation.x = -g * 0.78;
       e.houndLegs[3].rotation.x = -g * 0.78 + 0.18;
       e.bodyGroup.position.y = Math.abs(c) * 0.11;
       e.bodyGroup.rotation.x = c * 0.08;
-      e.houndHead.rotation.x = e.state === 'attack' ? -0.4 + g * 0.4 : c * 0.14;
+      e.houndHead.rotation.x = c * 0.14;
       e.houndHead.rotation.y = Math.sin(e.animPhase * 0.5) * 0.12;
+      for (const sp of e.houndEyeHalos) sp.scale.set(0.16, 0.16, 1);
       return;
     }
 
-    const strideFreq = e.speedClass === 'sprint' ? 12.2 : e.speedClass === 'run' ? 8.8 : 5.0;
-    e.animPhase += dt * strideFreq;
+    // Speed-synced walk/sprint cadence so zombies never skate when blocked/staggered
+    const targetStrideBlend =
+      e.state === 'climb_in' || e.state === 'tear_board'
+        ? 0
+        : THREE.MathUtils.clamp(actualSpeed / Math.max(0.5, e.moveSpeed * 0.45), 0, 1);
+    e.strideBlend = THREE.MathUtils.damp(e.strideBlend, targetStrideBlend, 12, dt);
+
+    const baseFreq = e.speedClass === 'sprint' ? 11.8 : e.speedClass === 'run' ? 8.5 : 5.2;
+    const freq = THREE.MathUtils.lerp(2.4, baseFreq, e.strideBlend);
+    e.animPhase += dt * freq;
     const s = Math.sin(e.animPhase);
     const c = Math.cos(e.animPhase);
     const limpSide = e.id % 2 === 0 ? 1 : -1;
 
+    // Eye halo brightness flare during attack windup without washing out face features
+    const attackFlare = e.state === 'attack' ? 0.16 : 0.11;
+    for (const sp of e.eyeHalos) {
+      sp.scale.set(attackFlare, attackFlare, 1);
+    }
+
     if (e.isCrawler) {
-      e.bodyGroup.position.y = -0.58;
-      e.bodyGroup.rotation.x = 1.25;
-      e.torsoPivot.rotation.set(0.15, c * 0.16, 0);
-      e.headPivot.rotation.set(-0.95, 0, Math.sin(e.animPhase * 0.7) * 0.14);
-      e.leftArm.rotation.x = -1.25 + s * 0.52;
-      e.rightArm.rotation.x = -1.25 - s * 0.52;
+      // Keep crawlers cleanly ON TOP of the floor slab (y >= 0.06m) so chest, arms, head & glowing eyes remain fully visible
+      e.bodyGroup.position.y = 0.16;
+      e.bodyGroup.rotation.set(1.28, 0, 0);
+      e.torsoPivot.rotation.set(-0.18, c * 0.18, 0);
+      e.headPivot.rotation.set(-1.05, 0, Math.sin(e.animPhase * 0.7) * 0.14);
+      e.leftArm.rotation.x = -1.35 + s * 0.52 * Math.max(0.3, e.strideBlend);
+      e.rightArm.rotation.x = -1.35 - s * 0.52 * Math.max(0.3, e.strideBlend);
       e.leftForearm.rotation.x = -0.55 - Math.max(0, s) * 0.45;
       e.rightForearm.rotation.x = -0.55 - Math.max(0, -s) * 0.45;
       return;
     }
 
+    // Explicitly reset bodyGroup stance so transitions out of spawn-rise/crawler/charge never stay stuck underground
+    e.bodyGroup.position.y = 0;
+    e.bodyGroup.rotation.set(0, 0, 0);
+
     // Deeper predatory torso hunch, dragging limp sway & directional hit flinch
     let torsoPitch = e.speedClass === 'sprint' ? 0.34 : e.speedClass === 'run' ? 0.24 : 0.18;
-    let torsoYaw = c * (e.speedClass === 'walk' ? 0.18 : 0.11);
-    const torsoRoll = s * (e.speedClass === 'walk' ? 0.1 : 0.055) + limpSide * 0.06;
+    let torsoYaw = c * (e.speedClass === 'walk' ? 0.18 : 0.11) * Math.max(0.35, e.strideBlend);
+    const torsoRoll =
+      s * (e.speedClass === 'walk' ? 0.1 : 0.055) * Math.max(0.35, e.strideBlend) +
+      limpSide * 0.06;
 
     if (e.hitReactTimer > 0) {
       const reactT = e.hitReactTimer / 0.26;
       const punch = Math.sin(reactT * Math.PI);
       if (e.hitReactZone === 'head') {
-        torsoPitch -= 0.24 * punch;
-        e.headPivot.rotation.x = -0.62 * punch;
-        e.headPivot.rotation.y = limpSide * 0.28 * punch;
+        torsoPitch -= 0.26 * punch;
+        e.headPivot.rotation.x = -0.68 * punch;
+        e.headPivot.rotation.y = limpSide * 0.32 * punch;
       } else {
-        torsoPitch -= 0.2 * punch;
-        torsoYaw += limpSide * 0.35 * punch;
-        e.headPivot.rotation.x = -0.24 * punch;
+        torsoPitch -= 0.22 * punch;
+        torsoYaw += limpSide * 0.38 * punch;
+        e.headPivot.rotation.x = -0.26 * punch;
       }
     } else if (e.state === 'brute_telegraph') {
       e.torsoPivot.rotation.set(0.32, 0, 0);
@@ -1764,6 +2381,20 @@ export class ZombieSystem {
       e.rightArm.rotation.x = -2.45;
       e.leftForearm.rotation.x = -0.35;
       e.rightForearm.rotation.x = -0.35;
+      return;
+    } else if (e.state === 'brute_charge') {
+      const rush = Math.sin(e.stateTimer * 18);
+      e.torsoPivot.rotation.set(0.54, rush * 0.12, 0);
+      e.headPivot.rotation.set(-0.36, 0, 0);
+      e.leftArm.rotation.x = -1.65 + rush * 0.4;
+      e.rightArm.rotation.x = -1.65 - rush * 0.4;
+      e.leftForearm.rotation.x = -0.9;
+      e.rightForearm.rotation.x = -0.9;
+      e.leftLeg.rotation.x = rush * 0.78;
+      e.rightLeg.rotation.x = -rush * 0.78;
+      e.leftShin.rotation.x = 0.35;
+      e.rightShin.rotation.x = 0.35;
+      e.bodyGroup.position.y = Math.abs(rush) * 0.08;
       return;
     } else {
       e.headPivot.rotation.set(
@@ -1776,54 +2407,87 @@ export class ZombieSystem {
     e.torsoPivot.rotation.set(torsoPitch, torsoYaw, torsoRoll);
 
     if (e.state === 'attack') {
-      const t = e.stateTimer * 10.5;
-      const slash = Math.sin(t);
-      e.torsoPivot.rotation.x = 0.26 + slash * 0.26;
-      e.leftArm.rotation.x = -1.75 + slash * 0.85;
-      e.rightArm.rotation.x = -1.75 - slash * 0.85;
-      e.leftForearm.rotation.x = -0.55 - Math.max(0, -slash) * 0.55;
-      e.rightForearm.rotation.x = -0.55 - Math.max(0, slash) * 0.55;
-      e.leftLeg.rotation.x = 0.15;
-      e.rightLeg.rotation.x = -0.15;
-      e.leftShin.rotation.x = 0.25;
-      e.rightShin.rotation.x = 0.15;
+      // 3-phase strike choreography: Windup (0..0.46) -> Strike Slash (0.46..0.66) -> Follow-through (0.66..1.0)
+      const windup = BALANCE.enemies.shambler.attackWindup;
+      const f = THREE.MathUtils.clamp(e.stateTimer / windup, 0, 1);
+      if (f < 0.46) {
+        const u = f / 0.46;
+        const easeU = Math.sin(u * Math.PI * 0.5);
+        e.torsoPivot.rotation.set(0.06 - easeU * 0.24, -0.45 * easeU * limpSide, -0.1 * easeU);
+        e.rightArm.rotation.x = THREE.MathUtils.lerp(-0.9, -2.55, easeU);
+        e.leftArm.rotation.x = THREE.MathUtils.lerp(-1.0, -0.6, easeU);
+        e.rightForearm.rotation.x = THREE.MathUtils.lerp(-0.55, -0.9, easeU);
+        e.leftForearm.rotation.x = -0.65;
+      } else if (f < 0.66) {
+        const u = (f - 0.46) / 0.2;
+        const snap = 1 - Math.pow(1 - u, 2);
+        e.torsoPivot.rotation.set(-0.18 + snap * 0.72, (-0.45 + snap * 0.92) * limpSide, 0.08);
+        e.rightArm.rotation.x = THREE.MathUtils.lerp(-2.55, -0.35, snap);
+        e.leftArm.rotation.x = THREE.MathUtils.lerp(-0.6, -1.65, snap);
+        e.rightForearm.rotation.x = THREE.MathUtils.lerp(-0.9, -0.22, snap);
+        e.leftForearm.rotation.x = -0.45;
+      } else {
+        const u = (f - 0.66) / 0.34;
+        e.torsoPivot.rotation.set(
+          THREE.MathUtils.lerp(0.54, 0.2, u),
+          THREE.MathUtils.lerp(0.47 * limpSide, 0, u),
+          0,
+        );
+        e.rightArm.rotation.x = THREE.MathUtils.lerp(-0.35, -1.0, u);
+        e.leftArm.rotation.x = THREE.MathUtils.lerp(-1.65, -1.05, u);
+        e.rightForearm.rotation.x = THREE.MathUtils.lerp(-0.22, -0.58, u);
+        e.leftForearm.rotation.x = -0.58;
+      }
+      e.leftLeg.rotation.x = 0.22;
+      e.rightLeg.rotation.x = -0.22;
+      e.leftShin.rotation.x = 0.28;
+      e.rightShin.rotation.x = 0.16;
     } else if (e.state === 'tear_board') {
       const yank = Math.sin(e.stateTimer * 8.5);
-      e.torsoPivot.rotation.x = 0.12 - yank * 0.12;
-      e.leftArm.rotation.x = -1.5 + yank * 0.65;
-      e.rightArm.rotation.x = -1.5 - yank * 0.65;
-      e.leftForearm.rotation.x = -0.75 + yank * 0.35;
-      e.rightForearm.rotation.x = -0.75 - yank * 0.35;
-      e.leftLeg.rotation.x = -0.12;
-      e.rightLeg.rotation.x = 0.12;
-      e.leftShin.rotation.x = 0.22;
-      e.rightShin.rotation.x = 0.12;
+      e.torsoPivot.rotation.x = 0.14 - yank * 0.14;
+      e.leftArm.rotation.x = -1.55 + yank * 0.68;
+      e.rightArm.rotation.x = -1.55 - yank * 0.68;
+      e.leftForearm.rotation.x = -0.78 + yank * 0.38;
+      e.rightForearm.rotation.x = -0.78 - yank * 0.38;
+      e.leftLeg.rotation.x = -0.14;
+      e.rightLeg.rotation.x = 0.14;
+      e.leftShin.rotation.x = 0.24;
+      e.rightShin.rotation.x = 0.14;
     } else if (e.state === 'climb_in') {
-      const cl = Math.sin(e.stateTimer * 9);
-      e.torsoPivot.rotation.x = 0.38;
-      e.leftArm.rotation.x = -1.35 + cl * 0.35;
-      e.rightArm.rotation.x = -1.35 - cl * 0.35;
-      e.leftForearm.rotation.x = -0.65;
-      e.rightForearm.rotation.x = -0.65;
-      e.leftLeg.rotation.x = -0.75 + cl * 0.3;
-      e.rightLeg.rotation.x = -0.75 - cl * 0.3;
-      e.leftShin.rotation.x = 1.05;
-      e.rightShin.rotation.x = 1.05;
+      const f = THREE.MathUtils.clamp(
+        e.stateTimer / BALANCE.enemies.shambler.climbDuration,
+        0,
+        1,
+      );
+      const arch = Math.sin(f * Math.PI);
+      e.torsoPivot.rotation.x = 0.45 * arch + 0.15;
+      e.leftArm.rotation.x = -1.7 + arch * 0.5;
+      e.rightArm.rotation.x = -1.7 + arch * 0.5;
+      e.leftForearm.rotation.x = -0.7;
+      e.rightForearm.rotation.x = -0.7;
+      e.leftLeg.rotation.x = -0.9 * arch;
+      e.rightLeg.rotation.x = -0.65 * arch;
+      e.leftShin.rotation.x = 1.1 * arch + 0.15;
+      e.rightShin.rotation.x = 0.9 * arch + 0.15;
     } else {
-      // Articulated knee-bend walk / sprint gait
-      const strideAmp = e.speedClass === 'sprint' ? 0.76 : e.speedClass === 'run' ? 0.6 : 0.44;
+      // Articulated knee-bend walk / sprint gait scaled cleanly by actual movement blend
+      const strideAmp =
+        (e.speedClass === 'sprint' ? 0.76 : e.speedClass === 'run' ? 0.6 : 0.44) * e.strideBlend;
       e.leftLeg.rotation.x = s * strideAmp;
       e.rightLeg.rotation.x = -s * strideAmp * (e.speedClass === 'walk' ? 0.72 : 1.0);
-      e.leftShin.rotation.x = Math.max(0.1, -s * 0.72 + 0.2);
-      e.rightShin.rotation.x = Math.max(0.1, s * 0.72 + 0.2);
+      e.leftShin.rotation.x = Math.max(0.1, -s * 0.72 * e.strideBlend + 0.2);
+      e.rightShin.rotation.x = Math.max(0.1, s * 0.72 * e.strideBlend + 0.2);
 
       // Reached out crooked asymmetric clawing arms
-      e.leftArm.rotation.x = -1.04 + c * (e.speedClass === 'sprint' ? 0.48 : 0.24);
-      e.rightArm.rotation.x = -0.92 - c * (e.speedClass === 'sprint' ? 0.48 : 0.24);
+      const armReach = e.speedClass === 'sprint' ? 0.46 : 0.24;
+      const armAmp = armReach * Math.max(0.35, e.strideBlend);
+      e.leftArm.rotation.x = -1.06 + c * armAmp;
+      e.rightArm.rotation.x = -0.94 - c * armAmp;
       e.leftForearm.rotation.x = -0.68 - Math.sin(e.animPhase + 0.6) * 0.24;
       e.rightForearm.rotation.x = -0.58 + Math.sin(e.animPhase + 0.6) * 0.24;
-      const riseOffset = e.spawnRiseTimer > 0 ? -(e.spawnRiseTimer / 0.45) * 0.95 : 0;
-      e.bodyGroup.position.y = Math.abs(s) * (e.speedClass === 'sprint' ? 0.065 : 0.04) + riseOffset;
+      const riseOffset = e.spawnRiseTimer > 0 ? -(e.spawnRiseTimer / 0.65) * 0.35 : 0;
+      e.bodyGroup.position.y =
+        Math.abs(s) * (e.speedClass === 'sprint' ? 0.065 : 0.04) * e.strideBlend + riseOffset;
     }
     void this.tmpVec;
   }

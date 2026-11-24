@@ -12,6 +12,7 @@ export interface BestRunRecord {
 }
 
 export const DEFAULT_SETTINGS: GameSettings = {
+  difficulty: 'survivor',
   quality: 'high',
   resolutionScale: 1.0,
   fov: BALANCE.player.defaultFov,
@@ -45,9 +46,16 @@ export function loadSettings(): GameSettings {
     const raw = window.localStorage.getItem(SETTINGS_STORAGE_KEY);
     if (!raw) return structuredClone(DEFAULT_SETTINGS);
     const parsed = JSON.parse(raw) as Partial<GameSettings>;
+    const validDiff =
+      parsed.difficulty === 'recruit' ||
+      parsed.difficulty === 'survivor' ||
+      parsed.difficulty === 'nightmare'
+        ? parsed.difficulty
+        : DEFAULT_SETTINGS.difficulty;
     return {
       ...DEFAULT_SETTINGS,
       ...parsed,
+      difficulty: validDiff,
       keyBindings: {
         ...DEFAULT_SETTINGS.keyBindings,
         ...(parsed.keyBindings ?? {}),

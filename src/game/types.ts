@@ -1,6 +1,52 @@
-import type { EnemyType, PerkId, PowerUpId, WeaponId, ZoneId } from '../config/balance';
+import type { DifficultyId, EnemyType, PerkId, PowerUpId, WeaponId, ZoneId } from '../config/balance';
 
 export type QualityPreset = 'low' | 'medium' | 'high' | 'ultra';
+
+export type DamageSource =
+  | 'shambler'
+  | 'hound'
+  | 'bloater_blast'
+  | 'brute'
+  | 'brute_charge'
+  | 'warden'
+  | 'alpha_boss';
+
+export type CampaignPhase =
+  | 'breach_yard'
+  | 'restore_power'
+  | 'recover_fuses'
+  | 'purge_reactor'
+  | 'defeat_warden'
+  | 'defend_radio'
+  | 'defeat_boss'
+  | 'extract'
+  | 'complete';
+
+export interface CampaignObjectiveInfo {
+  chapter: number;
+  totalChapters: number;
+  chapterTitle: string;
+  phase: CampaignPhase;
+  instruction: string;
+  detail: string;
+  progressText: string;
+  targetPos: { x: number; z: number } | null;
+  targetDistance: number | null;
+  targetBearingRad: number | null;
+  endlessMode: boolean;
+}
+
+export interface BossHudState {
+  name: string;
+  health: number;
+  maxHealth: number;
+}
+
+export interface DamageCallout {
+  text: string;
+  amount: number;
+  alpha: number;
+}
 
 export interface KeyBindings {
   forward: string;
@@ -18,6 +64,7 @@ export interface KeyBindings {
 }
 
 export interface GameSettings {
+  difficulty: DifficultyId;
   quality: QualityPreset;
   resolutionScale: number;
   fov: number;
@@ -92,10 +139,11 @@ export interface InteractPrompt {
 
 export type RoundPhase = 'intro' | 'active' | 'intermission' | 'special_intro';
 
-export type GameScreen = 'loading' | 'menu' | 'playing' | 'paused' | 'gameover';
+export type GameScreen = 'loading' | 'menu' | 'playing' | 'paused' | 'gameover' | 'victory';
 
 export interface HudSnapshot {
   screen: GameScreen;
+  difficulty: DifficultyId;
   loadProgress: number;
   loadLabel: string;
   pointerLocked: boolean;
@@ -118,7 +166,10 @@ export interface HudSnapshot {
   isReloading: boolean;
   reloadProgress: number;
   isAds: boolean;
+  adsBlend: number;
   isSprinting: boolean;
+  isSliding: boolean;
+  isHoldingBreath: boolean;
   crosshairSpread: number;
   flashlightOn: boolean;
   zombiesRemaining: number;
@@ -134,8 +185,15 @@ export interface HudSnapshot {
   damageFlash: number;
   damageIndicatorAngle: number | null;
   damageIndicatorAlpha: number;
+  damageIndicators: { id: number; angle: number; alpha: number; source?: DamageSource }[];
+  damageCallout: DamageCallout | null;
+  bloaterWarningDist: number | null;
+  offscreenThreat: { angle: number; urgency: number } | null;
+  offscreenThreats?: { id: number; angle: number; urgency: number; isAttacking: boolean }[];
   radioMessage: string | null;
   objectiveHint: string | null;
+  campaign?: CampaignObjectiveInfo;
+  boss: BossHudState | null;
   easterEggStep: number; // 0: need power, 1: collect fuses, 2: activate radio, 3: defending, 4: complete
   fusesCollected: number;
   radioDefendRemaining: number;

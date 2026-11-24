@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { DIFFICULTY_PRESETS, type DifficultyId } from '../config/balance';
 import { DEFAULT_SETTINGS, loadBestRun } from '../config/settings';
 import type { GameSettings, HudSnapshot, KeyBindings, QualityPreset } from '../game/types';
 
@@ -8,6 +9,7 @@ interface MenuOverlayProps {
   onStartGame: () => void;
   onResumeGame: () => void;
   onRestartGame: () => void;
+  onContinueEndless: () => void;
   onReturnToMenu: () => void;
   onUpdateSettings: (next: GameSettings) => void;
 }
@@ -33,12 +35,14 @@ export function MenuOverlay({
   onStartGame,
   onResumeGame,
   onRestartGame,
+  onContinueEndless,
   onReturnToMenu,
   onUpdateSettings,
 }: MenuOverlayProps) {
   const [subTab, setSubTab] = useState<'none' | 'settings' | 'credits'>('none');
   const [rebindingKey, setRebindingKey] = useState<keyof KeyBindings | null>(null);
   const best = loadBestRun();
+  const activeDifficulty = DIFFICULTY_PRESETS[settings.difficulty] ?? DIFFICULTY_PRESETS.survivor;
 
   const handleRebindKeyDown = (e: React.KeyboardEvent, keyName: keyof KeyBindings) => {
     e.preventDefault();
@@ -73,6 +77,105 @@ export function MenuOverlay({
     );
   }
 
+  if (snap.screen === 'victory') {
+    const accuracy =
+      snap.stats.shotsFired > 0
+        ? Math.round((snap.stats.shotsHit / snap.stats.shotsFired) * 100)
+        : 0;
+    const mins = Math.floor(snap.stats.elapsedSeconds / 60);
+    const secs = Math.floor(snap.stats.elapsedSeconds % 60);
+
+    return (
+      <div
+        data-testid="victory-screen"
+        className="fixed inset-0 z-30 flex items-center justify-center bg-[#060908]/90 px-6"
+      >
+        <div className="w-full max-w-xl bg-[#0e1210] border border-emerald-500/35 p-8 space-y-6 shadow-[0_12px_48px_rgba(0,0,0,0.9)]">
+          <div>
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-xs uppercase tracking-[0.22em] text-emerald-400">
+                Dawn Extraction Secured
+              </p>
+              <span className="text-[11px] font-mono-tabular uppercase tracking-wider px-2 py-0.5 bg-emerald-500/15 border border-emerald-400/40 text-emerald-300">
+                {DIFFICULTY_PRESETS[snap.difficulty]?.label ?? 'Survivor'}
+              </span>
+            </div>
+            <h2 className="font-display text-4xl font-bold uppercase tracking-wide text-[#ece9e2] mt-1">
+              Operation Hollowfield Complete
+            </h2>
+            <p className="text-xs text-[#b5afa0] mt-2">
+              Station reactor purged, Alpha Bloom Brute eliminated, and evac uplink confirmed.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 border-y border-white/10 py-5">
+            <div>
+              <div className="text-xs text-[#8d877a]">Round Cleared</div>
+              <div className="font-mono-tabular text-2xl font-bold text-[#ece9e2]">
+                {snap.round}
+              </div>
+            </div>
+            <div>
+              <div className="text-xs text-[#8d877a]">Eliminations</div>
+              <div className="font-mono-tabular text-2xl font-bold text-[#ece9e2]">
+                {snap.stats.kills}
+              </div>
+            </div>
+            <div>
+              <div className="text-xs text-[#8d877a]">Headshots</div>
+              <div className="font-mono-tabular text-2xl font-bold text-amber-400">
+                {snap.stats.headshots}
+              </div>
+            </div>
+            <div>
+              <div className="text-xs text-[#8d877a]">Total Points</div>
+              <div className="font-mono-tabular text-2xl font-bold text-[#ece9e2]">
+                {snap.stats.pointsEarned.toLocaleString()}
+              </div>
+            </div>
+            <div>
+              <div className="text-xs text-[#8d877a]">Accuracy</div>
+              <div className="font-mono-tabular text-2xl font-bold text-[#ece9e2]">
+                {accuracy}%
+              </div>
+            </div>
+            <div>
+              <div className="text-xs text-[#8d877a]">Mission Time</div>
+              <div className="font-mono-tabular text-2xl font-bold text-[#ece9e2]">
+                {mins}:{secs.toString().padStart(2, '0')}
+              </div>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-3">
+            <button
+              type="button"
+              data-testid="continue-endless-button"
+              onClick={onContinueEndless}
+              className="px-6 py-2.5 text-sm font-bold uppercase tracking-wider bg-emerald-500 text-[#07100c] hover:bg-emerald-400 transition-colors cursor-pointer"
+            >
+              Continue Endless Survival (+5,000 PTS)
+            </button>
+            <button
+              type="button"
+              onClick={onRestartGame}
+              className="px-5 py-2.5 text-sm font-semibold bg-amber-500 text-[#090b0a] hover:bg-amber-400 transition-colors cursor-pointer"
+            >
+              Play Again
+            </button>
+            <button
+              type="button"
+              onClick={onReturnToMenu}
+              className="px-5 py-2.5 text-sm font-medium bg-[#181c1a] text-[#ece9e2] border border-white/15 hover:bg-[#222725] transition-colors cursor-pointer"
+            >
+              Main Menu
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   if (snap.screen === 'gameover') {
     const accuracy =
       snap.stats.shotsFired > 0
@@ -85,7 +188,12 @@ export function MenuOverlay({
       <div className="fixed inset-0 z-30 flex items-center justify-center bg-[#070908]/88 px-6">
         <div className="w-full max-w-xl bg-[#0e1110] border border-white/15 p-8 space-y-6">
           <div>
-            <p className="text-xs uppercase tracking-[0.2em] text-red-400">Station Lost</p>
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-xs uppercase tracking-[0.2em] text-red-400">Station Lost</p>
+              <span className="text-[11px] font-mono-tabular uppercase tracking-wider text-[#b5afa0]">
+                {DIFFICULTY_PRESETS[snap.difficulty]?.label ?? 'Survivor'} · CH {snap.campaign?.chapter ?? 1}/6
+              </span>
+            </div>
             <h2 className="font-display text-4xl font-bold uppercase tracking-wide text-[#ece9e2] mt-1">
               Overrun on Round {snap.round}
             </h2>
@@ -133,6 +241,7 @@ export function MenuOverlay({
           <div className="flex items-center gap-3">
             <button
               type="button"
+              data-start="true"
               onClick={onRestartGame}
               className="px-6 py-2.5 text-sm font-semibold bg-amber-500 text-[#090b0a] hover:bg-amber-400 transition-colors cursor-pointer"
             >
@@ -188,61 +297,111 @@ export function MenuOverlay({
           )}
         </div>
 
-        {/* Navigation / Action Buttons */}
+        {/* Navigation / Difficulty / Campaign Briefing */}
         {subTab === 'none' && (
-          <div className="flex flex-col items-start gap-2.5 max-w-[270px]">
-            {snap.screen === 'menu' ? (
-              <button
-                type="button"
-                data-testid="play-button"
-                onClick={onStartGame}
-                className="w-full text-left px-5 py-3.5 text-sm font-bold uppercase tracking-[0.18em] bg-gradient-to-r from-amber-500 to-amber-600 text-[#090b0a] border-l-4 border-[#fef3c7] hover:from-amber-400 hover:to-amber-500 shadow-[0_4px_20px_rgba(245,158,11,0.28)] transition-all cursor-pointer"
-              >
-                Start Survival
-              </button>
-            ) : (
-              <>
-                <button
-                  type="button"
-                  onClick={onResumeGame}
-                  className="w-full text-left px-5 py-3.5 text-sm font-bold uppercase tracking-[0.18em] bg-gradient-to-r from-amber-500 to-amber-600 text-[#090b0a] border-l-4 border-[#fef3c7] hover:from-amber-400 hover:to-amber-500 transition-all cursor-pointer"
-                >
-                  Resume
-                </button>
-                <button
-                  type="button"
-                  onClick={onRestartGame}
-                  className="w-full text-left px-5 py-2.5 text-sm font-medium uppercase tracking-wider bg-[#0d100f]/80 text-[#ece9e2] border-l-2 border-white/25 hover:border-amber-400 hover:bg-[#171c1a]/90 transition-all cursor-pointer"
-                >
-                  Restart Run
-                </button>
-              </>
+          <div className="flex flex-col items-start gap-5">
+            {snap.screen === 'menu' && (
+              <div className="w-full max-w-md space-y-1.5">
+                <div className="text-[10px] font-mono-tabular uppercase tracking-[0.2em] text-[#9e988a]">
+                  Difficulty Mode
+                </div>
+                <div className="grid grid-cols-3 gap-2">
+                  {(['recruit', 'survivor', 'nightmare'] as DifficultyId[]).map((diffId) => {
+                    const preset = DIFFICULTY_PRESETS[diffId];
+                    const selected = settings.difficulty === diffId;
+                    return (
+                      <button
+                        key={diffId}
+                        type="button"
+                        data-testid={`difficulty-${diffId}`}
+                        onClick={() => onUpdateSettings({ ...settings, difficulty: diffId })}
+                        className={`px-3 py-2 text-left border transition-colors cursor-pointer ${
+                          selected
+                            ? 'bg-amber-500/20 border-amber-400 text-[#ece9e2]'
+                            : 'bg-[#0d100f]/80 border-white/15 text-[#9e988a] hover:border-white/35 hover:text-[#ece9e2]'
+                        }`}
+                      >
+                        <div className="text-xs font-bold uppercase tracking-wider">
+                          {preset.label}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="text-[11px] font-mono-tabular text-amber-300/90">
+                  {activeDifficulty.tagline}
+                </div>
+              </div>
             )}
 
-            <button
-              type="button"
-              onClick={() => setSubTab('settings')}
-              className="w-full text-left px-5 py-2.5 text-sm font-medium uppercase tracking-wider bg-[#0d100f]/80 text-[#ece9e2] border-l-2 border-white/25 hover:border-amber-400 hover:bg-[#171c1a]/90 transition-all cursor-pointer"
-            >
-              Settings
-            </button>
+            <div className="flex flex-col items-start gap-2.5 w-full max-w-[270px]">
+              {snap.screen === 'menu' ? (
+                <button
+                  type="button"
+                  data-testid="play-button"
+                  data-start="true"
+                  onClick={onStartGame}
+                  className="w-full text-left px-5 py-3.5 text-sm font-bold uppercase tracking-[0.18em] bg-gradient-to-r from-amber-500 to-amber-600 text-[#090b0a] border-l-4 border-[#fef3c7] hover:from-amber-400 hover:to-amber-500 shadow-[0_4px_20px_rgba(245,158,11,0.28)] transition-all cursor-pointer"
+                >
+                  Start Operation
+                </button>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    onClick={onResumeGame}
+                    className="w-full text-left px-5 py-3.5 text-sm font-bold uppercase tracking-[0.18em] bg-gradient-to-r from-amber-500 to-amber-600 text-[#090b0a] border-l-4 border-[#fef3c7] hover:from-amber-400 hover:to-amber-500 transition-all cursor-pointer"
+                  >
+                    Resume
+                  </button>
+                  <button
+                    type="button"
+                    onClick={onRestartGame}
+                    className="w-full text-left px-5 py-2.5 text-sm font-medium uppercase tracking-wider bg-[#0d100f]/80 text-[#ece9e2] border-l-2 border-white/25 hover:border-amber-400 hover:bg-[#171c1a]/90 transition-all cursor-pointer"
+                  >
+                    Restart Run
+                  </button>
+                </>
+              )}
 
-            <button
-              type="button"
-              onClick={() => setSubTab('credits')}
-              className="w-full text-left px-5 py-2.5 text-sm font-medium uppercase tracking-wider bg-[#0d100f]/80 text-[#ece9e2] border-l-2 border-white/25 hover:border-amber-400 hover:bg-[#171c1a]/90 transition-all cursor-pointer"
-            >
-              Controls & Credits
-            </button>
-
-            {snap.screen === 'paused' && (
               <button
                 type="button"
-                onClick={onReturnToMenu}
-                className="w-full text-left px-5 py-2.5 text-sm font-medium uppercase tracking-wider bg-[#0d100f]/75 text-[#b5afa0] border-l-2 border-red-600/60 hover:border-red-500 hover:bg-[#1a1212]/90 hover:text-white transition-all cursor-pointer"
+                onClick={() => setSubTab('settings')}
+                className="w-full text-left px-5 py-2.5 text-sm font-medium uppercase tracking-wider bg-[#0d100f]/80 text-[#ece9e2] border-l-2 border-white/25 hover:border-amber-400 hover:bg-[#171c1a]/90 transition-all cursor-pointer"
               >
-                Quit to Menu
+                Settings
               </button>
+
+              <button
+                type="button"
+                onClick={() => setSubTab('credits')}
+                className="w-full text-left px-5 py-2.5 text-sm font-medium uppercase tracking-wider bg-[#0d100f]/80 text-[#ece9e2] border-l-2 border-white/25 hover:border-amber-400 hover:bg-[#171c1a]/90 transition-all cursor-pointer"
+              >
+                Controls & Credits
+              </button>
+
+              {snap.screen === 'paused' && (
+                <button
+                  type="button"
+                  onClick={onReturnToMenu}
+                  className="w-full text-left px-5 py-2.5 text-sm font-medium uppercase tracking-wider bg-[#0d100f]/75 text-[#b5afa0] border-l-2 border-red-600/60 hover:border-red-500 hover:bg-[#1a1212]/90 hover:text-white transition-all cursor-pointer"
+                >
+                  Quit to Menu
+                </button>
+              )}
+            </div>
+
+            {snap.screen === 'menu' && (
+              <div className="max-w-md bg-[#0b0e0d]/78 border-l-2 border-sky-400/70 px-3.5 py-2.5 text-[11px] text-[#b5afa0] space-y-1">
+                <div className="font-mono-tabular uppercase tracking-[0.16em] text-sky-300 font-semibold">
+                  Operation Hollowfield // 6-Chapter Story
+                </div>
+                <p className="leading-relaxed">
+                  Breach the Silo Yard, restore Bio-Lab power, recover 3 relay fuses, purge the Bunker
+                  Reactor &amp; Containment Warden, transmit the emergency signal, slay the Alpha
+                  Bloom Brute, and reach Dawn Extraction.
+                </p>
+              </div>
             )}
           </div>
         )}

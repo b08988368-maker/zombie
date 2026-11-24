@@ -26,6 +26,52 @@ export type EnemyType = 'shambler' | 'hound' | 'bloater' | 'brute';
 
 export type ZoneId = 'farmhouse' | 'barn' | 'silo_yard' | 'lab_wing' | 'bunker';
 
+export type DifficultyId = 'recruit' | 'survivor' | 'nightmare';
+
+export interface DifficultyPreset {
+  id: DifficultyId;
+  label: string;
+  tagline: string;
+  healthMult: number;
+  damageMult: number;
+  speedMult: number;
+  startingPoints: number;
+  regenDelayMult: number;
+}
+
+export const DIFFICULTY_PRESETS: Record<DifficultyId, DifficultyPreset> = {
+  recruit: {
+    id: 'recruit',
+    label: 'Recruit',
+    tagline: '0.78× Enemy HP · 0.7× Damage · 750 Start PTS',
+    healthMult: 0.78,
+    damageMult: 0.7,
+    speedMult: 0.9,
+    startingPoints: 750,
+    regenDelayMult: 0.8,
+  },
+  survivor: {
+    id: 'survivor',
+    label: 'Survivor',
+    tagline: 'Balanced Campaign · 1.0× HP & Damage · 500 PTS',
+    healthMult: 1.0,
+    damageMult: 1.0,
+    speedMult: 1.0,
+    startingPoints: 500,
+    regenDelayMult: 1.0,
+  },
+  nightmare: {
+    id: 'nightmare',
+    label: 'Nightmare',
+    tagline: '1.25× Enemy HP · 1.35× Damage · Relentless Pace',
+    healthMult: 1.25,
+    damageMult: 1.35,
+    speedMult: 1.12,
+    startingPoints: 500,
+    regenDelayMult: 1.25,
+  },
+};
+
 export interface WeaponConfig {
   id: WeaponId;
   name: string;
@@ -90,11 +136,17 @@ export const BALANCE = {
     walkSpeed: 4.6,
     sprintSpeed: 7.2,
     crouchSpeed: 2.3,
+    slideInitialSpeed: 10.4,
+    slideMinTriggerSpeed: 5.2,
+    slideDuration: 0.68,
+    slideCooldown: 0.42,
+    slideEyeHeight: 0.88,
     jumpSpeed: 5.7,
     gravity: 18.0,
-    groundAccel: 30.0,
-    airAccel: 8.5,
-    friction: 12.0,
+    groundAccel: 14.0,
+    airAccel: 3.2,
+    friction: 8.5,
+    stopSpeed: 1.8,
     maxHealth: 100,
     ironhideMaxHealth: 250,
     regenDelay: 3.2,
@@ -569,8 +621,22 @@ export const BALANCE = {
 
   easterEgg: {
     fuseCount: 3,
-    radioDefendDuration: 40.0,
+    radioDefendDuration: 35.0,
     rewardPoints: 5000,
+  },
+
+  campaign: {
+    totalChapters: 6,
+    fuseCount: 3,
+    radioDefendDuration: 35.0,
+    reactorPos: { x: -15, z: -36 },
+    extractionPos: { x: 0, z: -1 },
+    wardenHealthMult: 4.5,
+    alphaBossBaseHealth: 2200,
+    alphaBossPerRoundHealth: 320,
+    alphaBossDamage: 55,
+    alphaBossScale: 1.58,
+    completionBonusPoints: 5000,
   },
 
   nav: {
@@ -593,28 +659,34 @@ export const BALANCE = {
   },
 } as const;
 
-export function calculateZombieHealth(round: number): number {
+export function calculateZombieHealth(
+  round: number,
+  difficulty: DifficultyId = 'survivor',
+): number {
   const effectiveRound =
     BALANCE.rounds.healthCapEnabled && round > BALANCE.rounds.healthCapRound
       ? BALANCE.rounds.healthCapRound
       : round;
-  if (effectiveRound <= 1) return BALANCE.rounds.baseHealthRound1;
-  if (effectiveRound <= BALANCE.rounds.healthStepCutoffRound) {
-    return (
+  let baseHp: number;
+  if (effectiveRound <= 1) {
+    baseHp = BALANCE.rounds.baseHealthRound1;
+  } else if (effectiveRound <= BALANCE.rounds.healthStepCutoffRound) {
+    baseHp =
       BALANCE.rounds.baseHealthRound1 +
-      (effectiveRound - 1) * BALANCE.rounds.healthStepEarly
-    );
-  }
-  const base9 =
-    BALANCE.rounds.baseHealthRound1 +
-    (BALANCE.rounds.healthStepCutoffRound - 1) * BALANCE.rounds.healthStepEarly;
-  return Math.round(
-    base9 *
+      (effectiveRound - 1) * BALANCE.rounds.healthStepEarly;
+  } else {
+    const base9 =
+      BALANCE.rounds.baseHealthRound1 +
+      (BALANCE.rounds.healthStepCutoffRound - 1) * BALANCE.rounds.healthStepEarly;
+    baseHp =
+      base9 *
       Math.pow(
         BALANCE.rounds.healthScaleLate,
         effectiveRound - BALANCE.rounds.healthStepCutoffRound,
-      ),
-  );
+      );
+  }
+  const mult = DIFFICULTY_PRESETS[difficulty]?.healthMult ?? 1.0;
+  return Math.max(1, Math.round(baseHp * mult));
 }
 
 export function calculateRoundZombieCount(round: number): number {

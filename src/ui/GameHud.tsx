@@ -87,9 +87,9 @@ export function GameHud({ snap, onResumePointer }: GameHudProps) {
         />
       )}
 
-      {/* Top-Left: Unboxed Sector, Power, Hostiles & Objective Strip */}
-      <div className="fixed top-5 left-6 flex flex-col gap-1 max-w-[320px]">
-        <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] tracking-[0.14em] uppercase text-[#c4beaf] border-l-2 border-amber-500/75 bg-gradient-to-r from-[#090b0a]/80 via-[#090b0a]/45 to-transparent pl-3 pr-6 py-1.5">
+      {/* Top-Left: Sector Status + 6-Chapter Campaign Mission Tracker (max-w-[332px] keeps ~190px clearance before top-center at 1280x720) */}
+      <div className="fixed top-5 left-6 flex flex-col gap-1.5 max-w-[332px]">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] tracking-[0.14em] uppercase text-[#c4beaf] border-l-2 border-amber-500/75 bg-gradient-to-r from-[#090b0a]/85 via-[#090b0a]/50 to-transparent pl-3 pr-5 py-1.5">
           <span className="font-semibold text-[#ece9e2]">{snap.currentZoneLabel}</span>
           <span aria-hidden="true" className="text-white/30">/</span>
           <span className={snap.powerOn ? 'text-emerald-400' : 'text-amber-400'}>
@@ -99,18 +99,47 @@ export function GameHud({ snap, onResumePointer }: GameHudProps) {
           <span className="text-[#ece9e2] font-mono-tabular">
             {snap.zombiesRemaining} Hostiles
           </span>
-          {snap.easterEggStep >= 1 && snap.easterEggStep < 4 && (
-            <>
-              <span aria-hidden="true" className="text-white/30">/</span>
-              <span className="text-amber-300 tabular-nums">
-                {snap.easterEggStep === 1 && `Fuses ${snap.fusesCollected}/3`}
-                {snap.easterEggStep === 2 && 'Radio Ready'}
-                {snap.easterEggStep === 3 && `Transmitting ${snap.radioDefendRemaining}s`}
-              </span>
-            </>
-          )}
         </div>
-        {snap.objectiveHint && (
+
+        {snap.campaign && (
+          <div className="bg-gradient-to-r from-[#090b0a]/88 via-[#090b0a]/65 to-[#090b0a]/20 border-l-2 border-sky-400/80 pl-3 pr-3.5 py-2 space-y-1 shadow-[0_4px_14px_rgba(0,0,0,0.55)]">
+            <div className="flex items-center justify-between gap-2 text-[10px] font-mono-tabular uppercase tracking-[0.1em]">
+              <span className="text-sky-300 font-semibold min-w-0 truncate">
+                {snap.campaign.endlessMode
+                  ? 'Endless Survival'
+                  : `CH ${snap.campaign.chapter}/${snap.campaign.totalChapters} · ${snap.campaign.chapterTitle}`}
+              </span>
+              <span className="text-amber-300 shrink-0 whitespace-nowrap">{snap.campaign.progressText}</span>
+            </div>
+
+            <div className="flex items-center justify-between gap-2.5">
+              <p className="text-xs font-semibold text-[#f3efe6] leading-snug">
+                {snap.campaign.instruction}
+              </p>
+              {snap.campaign.targetDistance !== null && snap.campaign.targetBearingRad !== null && (
+                <div className="flex items-center gap-1 shrink-0 bg-[#121614]/90 border border-sky-400/35 px-1.5 py-0.5 text-[11px] font-mono-tabular text-sky-200">
+                  <svg
+                    width="13"
+                    height="13"
+                    viewBox="0 0 16 16"
+                    className="text-amber-400 transition-transform duration-75"
+                    style={{ transform: `rotate(${snap.campaign.targetBearingRad}rad)` }}
+                    aria-hidden="true"
+                  >
+                    <path d="M8 1.5L13 13.5L8 10.8L3 13.5Z" fill="currentColor" />
+                  </svg>
+                  <span>{snap.campaign.targetDistance}m</span>
+                </div>
+              )}
+            </div>
+
+            <p className="text-[11px] text-[#b4ad9f] leading-snug">
+              {snap.campaign.detail}
+            </p>
+          </div>
+        )}
+
+        {!snap.campaign && snap.objectiveHint && (
           <p className="text-[11px] text-[#b8b1a3] leading-snug pl-3.5 pr-4 py-0.5 drop-shadow-[0_1px_3px_rgba(0,0,0,0.95)]">
             {snap.objectiveHint}
           </p>
@@ -151,8 +180,26 @@ export function GameHud({ snap, onResumePointer }: GameHudProps) {
         </div>
       )}
 
-      {/* Top-Center: Dramatic Unboxed Round Banner & Radio Transmissions */}
-      <div className="fixed top-5 left-1/2 -translate-x-1/2 flex flex-col items-center gap-2 text-center max-w-[500px]">
+      {/* Top-Center: Dramatic Unboxed Round Banner, Boss Health Bar & Radio Transmissions */}
+      <div className="fixed top-5 left-1/2 -translate-x-1/2 flex flex-col items-center gap-2 text-center max-w-[460px] pointer-events-none">
+        {snap.boss && (
+          <div data-testid="boss-bar" className="w-[360px] bg-[#0a0c0b]/88 border border-red-500/45 px-4 py-2 shadow-[0_6px_22px_rgba(0,0,0,0.85)]">
+            <div className="flex items-center justify-between text-[11px] font-mono-tabular uppercase tracking-[0.16em] mb-1">
+              <span className="text-red-300 font-bold">{snap.boss.name}</span>
+              <span className="text-amber-300">
+                {snap.boss.health.toLocaleString()} / {snap.boss.maxHealth.toLocaleString()}
+              </span>
+            </div>
+            <div className="h-2 bg-black/85 overflow-hidden border border-white/10">
+              <div
+                className="h-full bg-gradient-to-r from-red-600 via-orange-500 to-amber-400 transition-all duration-100"
+                style={{
+                  width: `${Math.max(0, Math.min(100, (snap.boss.health / Math.max(1, snap.boss.maxHealth)) * 100))}%`,
+                }}
+              />
+            </div>
+          </div>
+        )}
         {snap.roundBannerText && (
           <div className="flex flex-col items-center gap-1 px-8 py-1">
             <div
@@ -214,6 +261,17 @@ export function GameHud({ snap, onResumePointer }: GameHudProps) {
         </div>
       )}
 
+      {/* Tactical Sprint-Slide kinetic edge vignette */}
+      {snap.isSliding && !snap.isAds && !snap.isReviving && (
+        <div
+          className="fixed inset-0 pointer-events-none"
+          style={{
+            background:
+              'radial-gradient(ellipse at center, transparent 58%, rgba(236, 233, 226, 0.1) 86%, rgba(12, 16, 14, 0.44) 100%)',
+          }}
+        />
+      )}
+
       {/* Longbow Marksman Scope Vignette when ADS */}
       {snap.isAds && snap.activeWeaponId === 'longbow' && !snap.isReviving && (
         <div
@@ -229,31 +287,54 @@ export function GameHud({ snap, onResumePointer }: GameHudProps) {
       <div className="fixed inset-0 flex items-center justify-center">
         {!snap.isReviving && (() => {
           const isScoped = snap.isAds && snap.activeWeaponId === 'longbow';
+          const adsMix = snap.adsBlend ?? (snap.isAds ? 1 : 0);
           const gap = snap.isAds
             ? 5
-            : Math.round(7 + (snap.crosshairSpread ?? 0.25) * 18);
+            : Math.round((7 + (snap.crosshairSpread ?? 0.25) * 18) * (1 - adsMix * 0.45));
           const prongLen = snap.isAds ? 5 : 9;
 
           if (isScoped) {
             return (
               <div data-testid="crosshair" className="relative w-64 h-64 flex items-center justify-center">
-                <span className="absolute left-0 right-0 top-1/2 -translate-y-1/2 h-[1px] bg-black/80" />
-                <span className="absolute top-0 bottom-0 left-1/2 -translate-x-1/2 w-[1px] bg-black/80" />
-                <span className="absolute left-12 right-12 top-1/2 -translate-y-1/2 h-[1px] bg-amber-300/70" />
-                <span className="absolute top-12 bottom-12 left-1/2 -translate-x-1/2 w-[1px] bg-amber-300/70" />
-                <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shadow-[0_0_6px_rgba(251,191,36,0.95)]" />
+                <span className="absolute left-0 right-0 top-1/2 -translate-y-1/2 h-[1px] bg-black/85" />
+                <span className="absolute top-0 bottom-0 left-1/2 -translate-x-1/2 w-[1px] bg-black/85" />
+                <span className="absolute left-12 right-12 top-1/2 -translate-y-1/2 h-[1px] bg-amber-300/75" />
+                <span className="absolute top-12 bottom-12 left-1/2 -translate-x-1/2 w-[1px] bg-amber-300/75" />
+                {/* Calibrated Mil-Dot Stadia Marks */}
+                <span className="absolute left-16 top-1/2 -translate-y-1/2 w-[1px] h-2 bg-amber-300/80" />
+                <span className="absolute left-24 top-1/2 -translate-y-1/2 w-[1px] h-1.5 bg-amber-300/65" />
+                <span className="absolute right-24 top-1/2 -translate-y-1/2 w-[1px] h-1.5 bg-amber-300/65" />
+                <span className="absolute right-16 top-1/2 -translate-y-1/2 w-[1px] h-2 bg-amber-300/80" />
+                <span className="absolute top-16 left-1/2 -translate-x-1/2 h-[1px] w-2 bg-amber-300/80" />
+                <span className="absolute top-24 left-1/2 -translate-x-1/2 h-[1px] w-1.5 bg-amber-300/65" />
+                <span className="absolute bottom-24 left-1/2 -translate-x-1/2 h-[1px] w-1.5 bg-amber-300/65" />
+                <span className="absolute bottom-16 left-1/2 -translate-x-1/2 h-[1px] w-2 bg-amber-300/80" />
+                <span
+                  className={`w-1.5 h-1.5 rounded-full ${
+                    snap.isHoldingBreath
+                      ? 'bg-emerald-300 shadow-[0_0_8px_rgba(52,211,153,0.98)]'
+                      : 'bg-amber-400 shadow-[0_0_6px_rgba(251,191,36,0.95)]'
+                  }`}
+                />
+                <span
+                  className={`absolute -bottom-6 font-mono-tabular text-[10px] tracking-[0.18em] uppercase drop-shadow-[0_1px_2px_rgba(0,0,0,0.95)] ${
+                    snap.isHoldingBreath ? 'text-emerald-300' : 'text-amber-200/80'
+                  }`}
+                >
+                  {snap.isHoldingBreath ? 'BREATH STEADY' : '[SHIFT] HOLD BREATH'}
+                </span>
               </div>
             );
           }
 
-          if (snap.isAds) {
+          if (snap.isAds || adsMix > 0.72) {
             return (
               <div data-testid="crosshair" className="relative w-8 h-8 flex items-center justify-center">
                 <span className="w-[3px] h-[3px] rounded-full bg-amber-300 shadow-[0_0_5px_rgba(251,191,36,0.95)]" />
-                <span className="absolute left-1/2 -translate-x-1/2 w-[1px] h-[3px] bg-white/30 top-0" />
-                <span className="absolute left-1/2 -translate-x-1/2 w-[1px] h-[3px] bg-white/30 bottom-0" />
-                <span className="absolute top-1/2 -translate-y-1/2 h-[1px] w-[3px] bg-white/30 left-0" />
-                <span className="absolute top-1/2 -translate-y-1/2 h-[1px] w-[3px] bg-white/30 right-0" />
+                <span className="absolute left-1/2 -translate-x-1/2 w-[1px] h-[3px] bg-white/35 top-0" />
+                <span className="absolute left-1/2 -translate-x-1/2 w-[1px] h-[3px] bg-white/35 bottom-0" />
+                <span className="absolute top-1/2 -translate-y-1/2 h-[1px] w-[3px] bg-white/35 left-0" />
+                <span className="absolute top-1/2 -translate-y-1/2 h-[1px] w-[3px] bg-white/35 right-0" />
               </div>
             );
           }
@@ -322,18 +403,105 @@ export function GameHud({ snap, onResumePointer }: GameHudProps) {
           </div>
         )}
 
-        {/* Directional Damage Indicator */}
-        {snap.damageIndicatorAlpha > 0 && snap.damageIndicatorAngle !== null && (
-          <div
-            className="absolute w-36 h-36"
-            style={{
-              opacity: snap.damageIndicatorAlpha,
-              transform: `rotate(${snap.damageIndicatorAngle}rad)`,
-            }}
-          >
-            <div className="mx-auto w-12 h-2 bg-red-600/85" />
-          </div>
-        )}
+        {/* Off-screen Flanking Threat Warning Chevrons (up to 3 nearest flanking/attacking hostiles) */}
+        {!snap.isReviving &&
+          (snap.offscreenThreats && snap.offscreenThreats.length > 0
+            ? snap.offscreenThreats
+            : snap.offscreenThreat
+              ? [{ id: 0, angle: snap.offscreenThreat.angle, urgency: snap.offscreenThreat.urgency, isAttacking: snap.offscreenThreat.urgency > 0.65 }]
+              : []
+          ).map((threat) => (
+            <div
+              key={threat.id}
+              className="absolute w-64 h-64 pointer-events-none transition-transform duration-75"
+              style={{
+                opacity: Math.min(0.98, 0.45 + threat.urgency * 0.55),
+                transform: `rotate(${threat.angle}rad)`,
+              }}
+            >
+              <svg
+                width={threat.isAttacking ? 62 : 54}
+                height={threat.isAttacking ? 26 : 24}
+                viewBox="0 0 54 24"
+                className={`mx-auto ${
+                  threat.isAttacking || threat.urgency > 0.65
+                    ? 'drop-shadow-[0_0_10px_rgba(255,69,58,0.98)]'
+                    : 'drop-shadow-[0_0_8px_rgba(245,158,11,0.9)]'
+                }`}
+              >
+                <path
+                  d="M7 18 L27 5 L47 18"
+                  fill="none"
+                  stroke="#090b0a"
+                  strokeWidth="6.5"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  opacity="0.72"
+                />
+                <path
+                  d="M7 18 L27 5 L47 18"
+                  fill="none"
+                  stroke={threat.isAttacking || threat.urgency > 0.65 ? '#ff453a' : '#fbbf24'}
+                  strokeWidth={threat.isAttacking ? '4.2' : '3.5'}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            </div>
+          ))}
+
+        {/* Directional Radial Damage Hit Chevrons */}
+        {snap.damageIndicators.length > 0
+          ? snap.damageIndicators.map((ind) => (
+              <div
+                key={ind.id}
+                className="absolute w-52 h-52 pointer-events-none"
+                style={{
+                  opacity: Math.min(1, ind.alpha * 1.1),
+                  transform: `rotate(${ind.angle}rad)`,
+                }}
+              >
+                <svg
+                  width="84"
+                  height="32"
+                  viewBox="0 0 84 32"
+                  className="mx-auto drop-shadow-[0_0_12px_rgba(239,68,68,0.98)]"
+                >
+                  <path
+                    d="M6 25 Q42 4 78 25 L68 29 Q42 12 16 29 Z"
+                    fill="#ff3b30"
+                    stroke="#fecaca"
+                    strokeOpacity="0.55"
+                    strokeWidth="1.2"
+                  />
+                </svg>
+              </div>
+            ))
+          : snap.damageIndicatorAlpha > 0 &&
+            snap.damageIndicatorAngle !== null && (
+              <div
+                className="absolute w-52 h-52 pointer-events-none"
+                style={{
+                  opacity: Math.min(1, snap.damageIndicatorAlpha * 1.1),
+                  transform: `rotate(${snap.damageIndicatorAngle}rad)`,
+                }}
+              >
+                <svg
+                  width="84"
+                  height="32"
+                  viewBox="0 0 84 32"
+                  className="mx-auto drop-shadow-[0_0_12px_rgba(239,68,68,0.98)]"
+                >
+                  <path
+                    d="M6 25 Q42 4 78 25 L68 29 Q42 12 16 29 Z"
+                    fill="#ff3b30"
+                    stroke="#fecaca"
+                    strokeOpacity="0.55"
+                    strokeWidth="1.2"
+                  />
+                </svg>
+              </div>
+            )}
       </div>
 
       {/* Reload / Low-Ammo / Revive Center Bars */}
@@ -368,6 +536,23 @@ export function GameHud({ snap, onResumePointer }: GameHudProps) {
               style={{ width: `${Math.round(snap.reviveProgress * 100)}%` }}
             />
           </div>
+        </div>
+      )}
+
+      {/* Bloater Proximity Warning & Attributed Damage Callout */}
+      {snap.bloaterWarningDist !== null && (
+        <div className="fixed top-[63%] left-1/2 -translate-x-1/2 bg-[#1b2209]/92 border border-lime-400/75 px-3.5 py-1 text-[11px] font-mono-tabular font-bold uppercase tracking-[0.16em] text-lime-300 shadow-[0_0_16px_rgba(132,204,22,0.45)] animate-pulse">
+          BLOATER RUPTURING · {Math.max(1, Math.round(snap.bloaterWarningDist))}m — TAKE COVER
+        </div>
+      )}
+
+      {snap.damageCallout && snap.damageCallout.alpha > 0.05 && (
+        <div
+          data-testid="damage-callout"
+          className="fixed bottom-48 left-1/2 -translate-x-1/2 bg-[#1c0909]/90 border border-red-500/65 px-3.5 py-1 text-[11px] font-mono-tabular font-bold uppercase tracking-[0.15em] text-red-200 shadow-[0_2px_12px_rgba(0,0,0,0.9)]"
+          style={{ opacity: Math.min(1, snap.damageCallout.alpha) }}
+        >
+          {snap.damageCallout.text}
         </div>
       )}
 

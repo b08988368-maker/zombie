@@ -7,6 +7,7 @@ import { MenuOverlay } from './ui/MenuOverlay';
 
 const INITIAL_SNAPSHOT: HudSnapshot = {
   screen: 'loading',
+  difficulty: loadSettings().difficulty,
   loadProgress: 0,
   loadLabel: 'Bootstrapping Engine...',
   pointerLocked: false,
@@ -29,7 +30,10 @@ const INITIAL_SNAPSHOT: HudSnapshot = {
   isReloading: false,
   reloadProgress: 0,
   isAds: false,
+  adsBlend: 0,
   isSprinting: false,
+  isSliding: false,
+  isHoldingBreath: false,
   crosshairSpread: 0.25,
   flashlightOn: true,
   zombiesRemaining: 6,
@@ -45,8 +49,14 @@ const INITIAL_SNAPSHOT: HudSnapshot = {
   damageFlash: 0,
   damageIndicatorAngle: null,
   damageIndicatorAlpha: 0,
+  damageIndicators: [],
+  damageCallout: null,
+  bloaterWarningDist: null,
+  offscreenThreat: null,
+  offscreenThreats: [],
   radioMessage: null,
   objectiveHint: null,
+  boss: null,
   easterEggStep: 0,
   fusesCollected: 0,
   radioDefendRemaining: 0,
@@ -95,6 +105,10 @@ export default function App() {
     };
   }, []);
 
+  useEffect(() => {
+    document.body.dataset.state = snap.screen === 'menu' ? 'title' : snap.screen;
+  }, [snap.screen]);
+
   const handleUpdateSettings = (next: GameSettings) => {
     setSettings(next);
     engineRef.current?.updateSettings(next);
@@ -124,6 +138,7 @@ export default function App() {
         onStartGame={() => engineRef.current?.startNewGame()}
         onResumeGame={() => engineRef.current?.resumeGame()}
         onRestartGame={() => engineRef.current?.restartGame()}
+        onContinueEndless={() => engineRef.current?.continueEndless()}
         onReturnToMenu={() => engineRef.current?.returnToMenu()}
         onUpdateSettings={handleUpdateSettings}
       />

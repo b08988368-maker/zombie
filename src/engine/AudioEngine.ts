@@ -22,6 +22,9 @@ export class AudioEngine {
   private heartbeatCooldown = 0;
   private lowHealthAmount = 0;
   private currentZone: ZoneId = 'farmhouse';
+  private listenerX = -7;
+  private listenerY = 1.65;
+  private listenerZ = 22;
   private volumes = {
     master: 0.85,
     music: 0.65,
@@ -181,6 +184,9 @@ export class AudioEngine {
     healthRatio: number,
     dt: number,
   ): void {
+    this.listenerX = px;
+    this.listenerY = py;
+    this.listenerZ = pz;
     if (!this.ctx) return;
     const l = this.ctx.listener;
     if (l.positionX) {
@@ -472,8 +478,81 @@ export class AudioEngine {
     src.stop(now + 0.09);
   }
 
+  public playSlide(): void {
+    if (!this.ctx || !this.noiseBuffer) return;
+    const now = this.ctx.currentTime;
+    const src = this.ctx.createBufferSource();
+    src.buffer = this.noiseBuffer;
+    const filter = this.ctx.createBiquadFilter();
+    filter.type = 'bandpass';
+    filter.frequency.setValueAtTime(920, now);
+    filter.frequency.exponentialRampToValueAtTime(290, now + 0.34);
+    filter.Q.value = 0.85;
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.001, now);
+    g.gain.linearRampToValueAtTime(0.18, now + 0.03);
+    g.gain.exponentialRampToValueAtTime(0.001, now + 0.36);
+    src.connect(filter);
+    filter.connect(g);
+    g.connect(this.sfxGain);
+    src.start(now);
+    src.stop(now + 0.38);
+  }
+
+  public playAdsCue(entering: boolean): void {
+    if (!this.ctx) return;
+    const now = this.ctx.currentTime;
+    const osc = this.ctx.createOscillator();
+    const g = this.ctx.createGain();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(entering ? 420 : 320, now);
+    osc.frequency.exponentialRampToValueAtTime(entering ? 620 : 220, now + 0.045);
+    g.gain.setValueAtTime(0.045, now);
+    g.gain.exponentialRampToValueAtTime(0.001, now + 0.05);
+    osc.connect(g);
+    g.connect(this.sfxGain);
+    osc.start(now);
+    osc.stop(now + 0.055);
+  }
+
+  public playPlayerHit(): void {
+    if (!this.ctx) return;
+    const now = this.ctx.currentTime;
+
+    // Low chest thump + sharp slash tear so player always feels and hears damage immediately
+    const thud = this.ctx.createOscillator();
+    const tg = this.ctx.createGain();
+    thud.type = 'sine';
+    thud.frequency.setValueAtTime(92, now);
+    thud.frequency.exponentialRampToValueAtTime(32, now + 0.16);
+    tg.gain.setValueAtTime(0.45, now);
+    tg.gain.exponentialRampToValueAtTime(0.001, now + 0.18);
+    thud.connect(tg);
+    tg.connect(this.masterGain);
+    thud.start(now);
+    thud.stop(now + 0.19);
+
+    if (this.noiseBuffer) {
+      const tear = this.ctx.createBufferSource();
+      tear.buffer = this.noiseBuffer;
+      const bp = this.ctx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.frequency.setValueAtTime(1450, now);
+      bp.frequency.exponentialRampToValueAtTime(480, now + 0.12);
+      bp.Q.value = 1.1;
+      const ng = this.ctx.createGain();
+      ng.gain.setValueAtTime(0.34, now);
+      ng.gain.exponentialRampToValueAtTime(0.001, now + 0.13);
+      tear.connect(bp);
+      bp.connect(ng);
+      ng.connect(this.masterGain);
+      tear.start(now);
+      tear.stop(now + 0.14);
+    }
+  }
+
   public playZombieSound(
-    kind: 'groan' | 'attack' | 'hound' | 'brute',
+    kind: 'groan' | 'attack' | 'hound' | 'brute' | 'footstep',
     x: number,
     y: number,
     z: number,
@@ -481,7 +560,31 @@ export class AudioEngine {
     if (!this.ctx) return;
     const panner = this.createPanner(x, y, z);
     if (!panner) return;
+    if (kind === 'attack' || kind === 'hound') {
+      panner.refDistance = 3.6;
+      panner.rolloffFactor = 1.1;
+    }
     const now = this.ctx.currentTime;
+
+    if (kind === 'footstep') {
+      if (!this.noiseBuffer) return;
+      const step = this.ctx.createBufferSource();
+      step.buffer = this.noiseBuffer;
+      const lp = this.ctx.createBiquadFilter();
+      lp.type = 'bandpass';
+      lp.frequency.setValueAtTime(420 + Math.random() * 140, now);
+      lp.Q.value = 1.4;
+      const sg = this.ctx.createGain();
+      sg.gain.setValueAtTime(0.16, now);
+      sg.gain.exponentialRampToValueAtTime(0.001, now + 0.085);
+      step.connect(lp);
+      lp.connect(sg);
+      sg.connect(panner);
+      step.start(now);
+      step.stop(now + 0.095);
+      return;
+    }
+
     const osc = this.ctx.createOscillator();
     const filter = this.ctx.createBiquadFilter();
     const g = this.ctx.createGain();
@@ -492,7 +595,7 @@ export class AudioEngine {
       osc.frequency.exponentialRampToValueAtTime(110, now + 0.22);
       filter.type = 'bandpass';
       filter.frequency.value = 650;
-      g.gain.setValueAtTime(0.24, now);
+      g.gain.setValueAtTime(0.28, now);
       g.gain.exponentialRampToValueAtTime(0.001, now + 0.24);
       osc.connect(filter);
       filter.connect(g);
@@ -518,22 +621,42 @@ export class AudioEngine {
       return;
     }
 
-    const baseFreq = kind === 'attack' ? 165 : 95 + Math.random() * 45;
-    const dur = kind === 'attack' ? 0.28 : 0.45;
+    const isAttack = kind === 'attack';
+    const baseFreq = isAttack ? 185 : 95 + Math.random() * 45;
+    const dur = isAttack ? 0.42 : 0.45;
     osc.type = 'sawtooth';
     osc.frequency.setValueAtTime(baseFreq, now);
     osc.frequency.exponentialRampToValueAtTime(baseFreq * 0.68, now + dur);
     filter.type = 'bandpass';
-    filter.frequency.value = kind === 'attack' ? 580 : 380;
-    filter.Q.value = 2.0;
+    filter.frequency.value = isAttack ? 780 : 380;
+    filter.Q.value = isAttack ? 1.5 : 2.0;
     g.gain.setValueAtTime(0.001, now);
-    g.gain.linearRampToValueAtTime(kind === 'attack' ? 0.24 : 0.16, now + 0.04);
+    g.gain.linearRampToValueAtTime(isAttack ? 0.36 : 0.16, now + 0.035);
     g.gain.exponentialRampToValueAtTime(0.001, now + dur);
     osc.connect(filter);
     filter.connect(g);
     g.connect(panner);
     osc.start(now);
     osc.stop(now + dur + 0.02);
+
+    // Extra sharp rasp layer on pre-strike attack windup so flanking strikes telegraph unmistakably
+    if (isAttack && this.noiseBuffer) {
+      const rasp = this.ctx.createBufferSource();
+      rasp.buffer = this.noiseBuffer;
+      const rbp = this.ctx.createBiquadFilter();
+      rbp.type = 'bandpass';
+      rbp.frequency.setValueAtTime(1150, now);
+      rbp.Q.value = 1.6;
+      const rg = this.ctx.createGain();
+      rg.gain.setValueAtTime(0.001, now);
+      rg.gain.linearRampToValueAtTime(0.22, now + 0.05);
+      rg.gain.exponentialRampToValueAtTime(0.001, now + 0.36);
+      rasp.connect(rbp);
+      rbp.connect(rg);
+      rg.connect(panner);
+      rasp.start(now);
+      rasp.stop(now + 0.38);
+    }
   }
 
   public playExplosion(x: number, y: number, z: number): void {
@@ -781,6 +904,10 @@ export class AudioEngine {
 
   public playSurfaceImpact(surface: SurfaceType, x: number, y: number, z: number): void {
     if (!this.ctx || !this.noiseBuffer) return;
+    const dx = x - this.listenerX;
+    const dy = y - this.listenerY;
+    const dz = z - this.listenerZ;
+    if (dx * dx + dy * dy + dz * dz > 34 * 34) return;
     const panner = this.createPanner(x, y, z);
     if (!panner) return;
     const now = this.ctx.currentTime;
@@ -834,6 +961,138 @@ export class AudioEngine {
     g.connect(this.voiceGain);
     src.start(now);
     src.stop(now + 0.1);
+  }
+
+  public playBloaterFuseWarning(progress: number, x: number, y: number, z: number): void {
+    if (!this.ctx) return;
+    const panner = this.createPanner(x, y, z);
+    if (!panner) return;
+    panner.refDistance = 4.5;
+    const now = this.ctx.currentTime;
+    const osc = this.ctx.createOscillator();
+    const g = this.ctx.createGain();
+    osc.type = 'sawtooth';
+    const baseFreq = 320 + progress * 440;
+    osc.frequency.setValueAtTime(baseFreq, now);
+    osc.frequency.exponentialRampToValueAtTime(baseFreq * 1.35, now + 0.14);
+    g.gain.setValueAtTime(0.001, now);
+    g.gain.linearRampToValueAtTime(0.28, now + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.001, now + 0.18);
+    osc.connect(g);
+    g.connect(panner);
+    osc.start(now);
+    osc.stop(now + 0.19);
+  }
+
+  public playSpawnEruption(x: number, y: number, z: number): void {
+    if (!this.ctx || !this.noiseBuffer) return;
+    const panner = this.createPanner(x, y, z);
+    if (!panner) return;
+    panner.refDistance = 4.0;
+    const now = this.ctx.currentTime;
+
+    const thud = this.ctx.createOscillator();
+    const tg = this.ctx.createGain();
+    thud.type = 'sine';
+    thud.frequency.setValueAtTime(84, now);
+    thud.frequency.exponentialRampToValueAtTime(32, now + 0.35);
+    tg.gain.setValueAtTime(0.28, now);
+    tg.gain.exponentialRampToValueAtTime(0.001, now + 0.38);
+    thud.connect(tg);
+    tg.connect(panner);
+    thud.start(now);
+    thud.stop(now + 0.4);
+
+    const debris = this.ctx.createBufferSource();
+    debris.buffer = this.noiseBuffer;
+    const bp = this.ctx.createBiquadFilter();
+    bp.type = 'lowpass';
+    bp.frequency.setValueAtTime(620, now);
+    bp.frequency.exponentialRampToValueAtTime(140, now + 0.42);
+    const dg = this.ctx.createGain();
+    dg.gain.setValueAtTime(0.22, now);
+    dg.gain.exponentialRampToValueAtTime(0.001, now + 0.45);
+    debris.connect(bp);
+    bp.connect(dg);
+    dg.connect(panner);
+    debris.start(now);
+    debris.stop(now + 0.48);
+  }
+
+  public playBruteChargeRoar(x: number, y: number, z: number): void {
+    if (!this.ctx) return;
+    const panner = this.createPanner(x, y, z);
+    if (!panner) return;
+    panner.refDistance = 5.5;
+    const now = this.ctx.currentTime;
+
+    for (const detune of [-12, 12]) {
+      const osc = this.ctx.createOscillator();
+      const filter = this.ctx.createBiquadFilter();
+      const g = this.ctx.createGain();
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(108, now);
+      osc.frequency.exponentialRampToValueAtTime(48, now + 0.85);
+      osc.detune.value = detune;
+      filter.type = 'lowpass';
+      filter.frequency.setValueAtTime(580, now);
+      filter.frequency.exponentialRampToValueAtTime(220, now + 0.85);
+      g.gain.setValueAtTime(0.001, now);
+      g.gain.linearRampToValueAtTime(0.32, now + 0.06);
+      g.gain.exponentialRampToValueAtTime(0.001, now + 0.88);
+      osc.connect(filter);
+      filter.connect(g);
+      g.connect(panner);
+      osc.start(now);
+      osc.stop(now + 0.9);
+    }
+  }
+
+  public playChapterAdvance(): void {
+    if (!this.ctx) return;
+    const now = this.ctx.currentTime;
+    const notes = [293.66, 369.99, 440, 587.33];
+    notes.forEach((freq, idx) => {
+      if (!this.ctx) return;
+      const t = now + idx * 0.09;
+      const osc = this.ctx.createOscillator();
+      const g = this.ctx.createGain();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(freq, t);
+      g.gain.setValueAtTime(0.001, t);
+      g.gain.linearRampToValueAtTime(0.18, t + 0.025);
+      g.gain.exponentialRampToValueAtTime(0.001, t + 0.55);
+      osc.connect(g);
+      g.connect(this.musicGain);
+      g.connect(this.reverbNode);
+      osc.start(t);
+      osc.stop(t + 0.58);
+    });
+  }
+
+  public playVictoryAnthem(): void {
+    if (!this.ctx) return;
+    const now = this.ctx.currentTime;
+    const notes = [261.63, 329.63, 392.0, 523.25, 659.25, 783.99];
+    notes.forEach((freq, idx) => {
+      if (!this.ctx) return;
+      const t = now + idx * 0.11;
+      for (const det of [-5, 5]) {
+        const osc = this.ctx.createOscillator();
+        const g = this.ctx.createGain();
+        osc.type = det < 0 ? 'triangle' : 'sine';
+        osc.frequency.setValueAtTime(freq, t);
+        osc.detune.value = det;
+        g.gain.setValueAtTime(0.001, t);
+        g.gain.linearRampToValueAtTime(0.16, t + 0.04);
+        g.gain.exponentialRampToValueAtTime(0.001, t + 1.45);
+        osc.connect(g);
+        g.connect(this.musicGain);
+        g.connect(this.reverbNode);
+        osc.start(t);
+        osc.stop(t + 1.5);
+      }
+    });
   }
 
   public dispose(): void {

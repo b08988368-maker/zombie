@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import {
   BALANCE,
+  type DifficultyId,
   type EnemyType,
   type PerkId,
   type PowerUpId,
@@ -83,14 +84,29 @@ export class InteractablesSystem {
   private readonly powerUpLight: THREE.PointLight;
   private readonly activePowerUps = new Map<PowerUpId, number>();
   private readonly powerUpTypeCooldowns = new Map<PowerUpId, number>();
+  private readonly powerUpMatCache = new Map<
+    PowerUpId,
+    {
+      glowMat: THREE.MeshStandardMaterial;
+      trimMat: THREE.MeshStandardMaterial;
+      haloMat: THREE.MeshBasicMaterial;
+      beaconMat: THREE.MeshBasicMaterial;
+    }
+  >();
   private killsSinceLastDrop = 0;
   private dropsThisRound = 0;
   private totalDropsEver = 0;
 
-  // Easter egg state
-  public easterEggStep = 0; // 0=need power, 1=find fuses, 2=activate radio, 3=defending, 4=done
+  // Campaign / story progression state
+  public easterEggStep = 0; // 0=need power, 1=find fuses, 2=reactor/radio, 3=defending, 4=done
   public fusesCollected = 0;
   public radioDefendTimer = 0;
+  public reactorPurged = false;
+  public wardenDefeated = false;
+  public bossSpawned = false;
+  public bossDefeated = false;
+  public extracted = false;
+  public endlessMode = false;
   private eeDefenseSpawnTimer = 0;
 
   private interactHoldTimer = 0;
@@ -210,6 +226,7 @@ export class InteractablesSystem {
 
     this.overclockState = 'idle';
     this.overclockTimer = 0;
+    this.map.overclockLight.intensity = 0.2;
     this.trapState = 'ready';
     this.trapTimer = 0;
     this.trapDamageTick = 0;
@@ -220,6 +237,12 @@ export class InteractablesSystem {
     this.easterEggStep = 0;
     this.fusesCollected = 0;
     this.radioDefendTimer = 0;
+    this.reactorPurged = false;
+    this.wardenDefeated = false;
+    this.bossSpawned = false;
+    this.bossDefeated = false;
+    this.extracted = false;
+    this.endlessMode = false;
     this.eeDefenseSpawnTimer = 0;
     this.interactHoldTimer = 0;
     this.lastPromptId = '';
@@ -231,6 +254,10 @@ export class InteractablesSystem {
     this.map.powerIndicatorMat.color.setHex(0xef4444);
     this.map.powerIndicatorMat.emissive.setHex(0xef4444);
     this.map.radioScreenMat.emissive.setHex(0xef4444);
+    this.map.reactorStatusMat.color.setHex(0xf59e0b);
+    this.map.reactorStatusMat.emissive.setHex(0xd97706);
+    this.map.extractionGroup.visible = false;
+    this.map.extractionLight.intensity = 0;
 
     for (const pl of this.map.poweredLights) {
       pl.intensity = 0.22;
@@ -276,22 +303,42 @@ export class InteractablesSystem {
     return out;
   }
 
+  private getPowerUpMaterials(id: PowerUpId, color: number) {
+    let cached = this.powerUpMatCache.get(id);
+    if (!cached) {
+      cached = {
+        glowMat: new THREE.MeshStandardMaterial({
+          color,
+          emissive: color,
+          emissiveIntensity: 1.65,
+          roughness: 0.22,
+          metalness: 0.35,
+        }),
+        trimMat: new THREE.MeshStandardMaterial({
+          color: 0xe2e8f0,
+          emissive: color,
+          emissiveIntensity: 0.55,
+          roughness: 0.3,
+          metalness: 0.7,
+        }),
+        haloMat: new THREE.MeshBasicMaterial({ color }),
+        beaconMat: new THREE.MeshBasicMaterial({
+          color,
+          transparent: true,
+          opacity: 0.16,
+          side: THREE.DoubleSide,
+          depthWrite: false,
+          blending: THREE.AdditiveBlending,
+        }),
+      };
+      this.powerUpMatCache.set(id, cached);
+    }
+    return cached;
+  }
+
   private buildPowerUpEmblem(id: PowerUpId, color: number): THREE.Group {
     const group = new THREE.Group();
-    const glowMat = new THREE.MeshStandardMaterial({
-      color,
-      emissive: color,
-      emissiveIntensity: 1.65,
-      roughness: 0.22,
-      metalness: 0.35,
-    });
-    const trimMat = new THREE.MeshStandardMaterial({
-      color: 0xe2e8f0,
-      emissive: color,
-      emissiveIntensity: 0.55,
-      roughness: 0.3,
-      metalness: 0.7,
-    });
+    const { glowMat, trimMat, haloMat, beaconMat } = this.getPowerUpMaterials(id, color);
 
     if (id === 'max_ammo') {
       // Tactical ammo crate emblem
@@ -352,7 +399,7 @@ export class InteractablesSystem {
 
     const halo = new THREE.Mesh(
       new THREE.TorusGeometry(0.44, 0.032, 8, 22),
-      new THREE.MeshBasicMaterial({ color }),
+      haloMat,
     );
     halo.rotation.x = Math.PI / 2;
     halo.position.y = -0.26;
@@ -361,14 +408,7 @@ export class InteractablesSystem {
     // Translucent additive beacon shaft so dropped power-ups stand out in fog
     const beacon = new THREE.Mesh(
       new THREE.CylinderGeometry(0.14, 0.42, 2.3, 12, 1, true),
-      new THREE.MeshBasicMaterial({
-        color,
-        transparent: true,
-        opacity: 0.16,
-        side: THREE.DoubleSide,
-        depthWrite: false,
-        blending: THREE.AdditiveBlending,
-      }),
+      beaconMat,
     );
     beacon.position.y = 0.65;
     group.add(beacon);
@@ -428,6 +468,7 @@ export class InteractablesSystem {
     zombies: ZombieSystem,
     points: number,
     round: number,
+    difficulty: DifficultyId,
     interactHeld: boolean,
     onSpendPoints: (cost: number) => void,
     onEarnPoints: (amt: number, reason: string) => void,
@@ -441,6 +482,7 @@ export class InteractablesSystem {
       z: number,
     ) => void,
     onPowerUpCollect?: (id: PowerUpId, label: string, colorHex: string) => void,
+    onCampaignEvent?: (event: 'chapter' | 'warden' | 'boss' | 'extract') => void,
   ): InteractPrompt | null {
     // Tick active power-up timers & cooldowns
     for (const [id, rem] of this.activePowerUps) {
@@ -525,6 +567,7 @@ export class InteractablesSystem {
         this.crateState = 'idle';
         this.cratePreviewGroup.visible = false;
         activeCrate.lid.rotation.x = 0;
+        this.syncCrateVisibility();
       }
     } else {
       activeCrate.lid.rotation.x = THREE.MathUtils.damp(activeCrate.lid.rotation.x, 0, 8, dt);
@@ -587,26 +630,33 @@ export class InteractablesSystem {
       }
     }
 
-    // Easter egg step 3 defense timer
+    // Campaign Chapter 5: Lab Emergency Radio defense -> Alpha Bloom Brute boss arrival
     if (this.easterEggStep === 3) {
       this.radioDefendTimer -= dt;
       this.eeDefenseSpawnTimer -= dt;
       if (this.eeDefenseSpawnTimer <= 0) {
-        this.eeDefenseSpawnTimer = 2.5;
+        this.eeDefenseSpawnTimer = 2.6;
         const labSpawn = this.map.spawnPoints.find((s) => s.zone === 'lab_wing');
         if (labSpawn && zombies.getAliveCount() < BALANCE.rounds.maxAlive) {
-          zombies.spawnEnemy('shambler', Math.max(round, 6), labSpawn, this.rng);
+          zombies.spawnEnemy('shambler', Math.max(round, 6), labSpawn, this.rng, difficulty);
         }
       }
       if (this.radioDefendTimer <= 0) {
         this.easterEggStep = 4;
+        this.bossSpawned = true;
         this.map.radioScreenMat.emissive.setHex(0x22c55e);
-        onEarnPoints(BALANCE.easterEgg.rewardPoints, 'Broadcast Complete');
+        onEarnPoints(BALANCE.campaign.completionBonusPoints * 0.4, 'Signal Locked');
         weapons.refillAllAmmo();
         player.grenades = BALANCE.player.grenadesMax;
         this.audio.playPowerUp('max_ammo');
-        onRadioMessage('Emergency Broadcast Transmitted: Rescue telemetry logged. (+5000 PTS & Max Ammo)');
+        onRadioMessage('Chopper Uplink Confirmed — WARNING: Alpha Bloom Brute incoming!');
+        onCampaignEvent?.('boss');
       }
+    }
+
+    if (this.bossDefeated && !this.extracted) {
+      this.map.extractionGroup.visible = true;
+      this.map.extractionLight.intensity = 2.8 + Math.sin(performance.now() * 0.008) * 0.7;
     }
 
     // Find closest interactable prompt
@@ -654,6 +704,7 @@ export class InteractablesSystem {
           onRadioMessage,
           onDoorOpened,
           onPerkBought,
+          onCampaignEvent,
         );
       }
     } else {
@@ -705,7 +756,10 @@ export class InteractablesSystem {
   private syncCrateVisibility(): void {
     const fireSale = this.isFireSale();
     this.map.crateSlots.forEach((slot, idx) => {
-      const visible = fireSale || idx === this.activeCrateSlotIdx;
+      const visible =
+        fireSale ||
+        idx === this.activeCrateSlotIdx ||
+        (this.crateState !== 'idle' && idx === this.activeCrateSlotIdx);
       slot.active = visible;
       slot.group.visible = visible;
       slot.light.intensity = visible ? 1.8 : 0;
@@ -930,23 +984,76 @@ export class InteractablesSystem {
       }
     }
 
-    // Easter Egg Radio Console
+    // Bunker Reactor Core Purge (Campaign Chapter 4)
+    {
+      const rp = this.map.reactorPos;
+      const dist = Math.hypot(rp.x - px, rp.z - pz);
+      if (dist < bestDist + 1.1 && this.powerOn && !this.reactorPurged) {
+        bestDist = dist;
+        const ready = this.fusesCollected >= BALANCE.campaign.fuseCount;
+        best = {
+          id: 'purge_reactor',
+          title: 'Bunker Containment Reactor',
+          subtitle: ready
+            ? 'Hold F to purge sub-level reactor'
+            : `Missing Relay Fuses (${this.fusesCollected}/3)`,
+          cost: null,
+          canAfford: ready,
+          progress: 0,
+          blockedReason: ready ? undefined : 'Collect all 3 Relay Fuses first',
+        };
+      }
+    }
+
+    // Emergency Radio Console (Campaign Chapter 5)
     {
       const rc = this.map.radioConsolePos;
       const dist = Math.hypot(rc.x - px, rc.z - pz);
       if (dist < bestDist && this.powerOn && this.easterEggStep >= 1 && this.easterEggStep <= 2) {
         bestDist = dist;
+        const ready =
+          this.fusesCollected >= BALANCE.campaign.fuseCount &&
+          this.reactorPurged &&
+          this.wardenDefeated;
         best = {
           id: 'ee_radio',
           title: 'Emergency Telemetry Radio',
           subtitle:
             this.fusesCollected < 3
               ? `Missing Fuses (${this.fusesCollected}/3)`
-              : 'Hold F to transmit emergency signal',
+              : !this.reactorPurged
+                ? 'Purge Bunker Reactor Core first'
+                : !this.wardenDefeated
+                  ? 'Defeat Containment Warden first'
+                  : 'Hold F to transmit distress signal',
           cost: null,
-          canAfford: this.fusesCollected >= 3,
+          canAfford: ready,
           progress: 0,
-          blockedReason: this.fusesCollected < 3 ? 'Insert all 3 fuses first' : undefined,
+          blockedReason:
+            this.fusesCollected < 3
+              ? 'Insert all 3 fuses first'
+              : !this.reactorPurged
+                ? 'Purge Bunker Reactor Core first'
+                : !this.wardenDefeated
+                  ? 'Eliminate Containment Warden first'
+                  : undefined,
+        };
+      }
+    }
+
+    // Extraction Flare (Campaign Chapter 6)
+    if (this.bossDefeated && !this.extracted) {
+      const ep = this.map.extractionPos;
+      const dist = Math.hypot(ep.x - px, ep.z - pz);
+      if (dist < bestDist + 0.8) {
+        bestDist = dist;
+        best = {
+          id: 'extract',
+          title: 'Dawn Extraction Flare',
+          subtitle: 'Hold F to board evac chopper',
+          cost: null,
+          canAfford: true,
+          progress: 0,
         };
       }
     }
@@ -963,6 +1070,7 @@ export class InteractablesSystem {
     onRadioMessage: (msg: string) => void,
     onDoorOpened: () => void,
     onPerkBought: () => void,
+    onCampaignEvent?: (event: 'chapter' | 'warden' | 'boss' | 'extract') => void,
   ): void {
     if (id.startsWith('door:')) {
       const doorId = id.slice(5);
@@ -1131,19 +1239,44 @@ export class InteractablesSystem {
       this.audio.playBuy(true);
       if (this.fusesCollected >= 3) {
         this.easterEggStep = 2;
-        onRadioMessage('All 3 fuses recovered. Activate the Lab Emergency Radio.');
+        this.audio.playChapterAdvance();
+        onCampaignEvent?.('chapter');
+        onRadioMessage('All 3 Relay Fuses recovered! Purge the Bunker Reactor Core.');
       } else {
         onRadioMessage(`Relay Fuse collected (${this.fusesCollected}/3).`);
       }
       return;
     }
 
+    if (id === 'purge_reactor') {
+      if (this.reactorPurged) return;
+      this.reactorPurged = true;
+      this.map.reactorStatusMat.color.setHex(0xef4444);
+      this.map.reactorStatusMat.emissive.setHex(0xdc2626);
+      this.map.reactorStatusMat.emissiveIntensity = 1.9;
+      this.audio.playRoundStinger('brute');
+      onEarnPoints(1000, 'Reactor Purged');
+      onRadioMessage('Reactor Core Flushing — Containment Warden breached into Bunker!');
+      onCampaignEvent?.('warden');
+      return;
+    }
+
     if (id === 'ee_radio') {
       this.easterEggStep = 3;
-      this.radioDefendTimer = BALANCE.easterEgg.radioDefendDuration;
+      this.radioDefendTimer = BALANCE.campaign.radioDefendDuration;
       this.map.radioScreenMat.emissive.setHex(0xf59e0b);
       this.audio.playRoundStinger('special');
-      onRadioMessage('Transmitting containment telemetry... Hold position for 40 seconds!');
+      onRadioMessage(
+        `Transmitting distress uplink... Hold Bio-Lab for ${BALANCE.campaign.radioDefendDuration}s!`,
+      );
+      return;
+    }
+
+    if (id === 'extract') {
+      if (this.extracted || !this.bossDefeated) return;
+      this.extracted = true;
+      this.audio.playVictoryAnthem();
+      onCampaignEvent?.('extract');
     }
   }
 }

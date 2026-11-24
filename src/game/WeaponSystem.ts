@@ -108,7 +108,7 @@ const WEAPON_SPECS: Record<WeaponId, WeaponSpec> = {
 };
 
 const ADS_EYE_Y: Record<WeaponId, number> = {
-  service_pistol: -0.056,
+  service_pistol: -0.062,
   hedgerow: -0.062,
   rattler: -0.084,
   ironsight: -0.086,
@@ -145,40 +145,47 @@ function createGlovedHand(
 ): THREE.Group {
   const hand = new THREE.Group();
 
-  // Sculpted compact palm / metacarpal block
-  const palm = new THREE.Mesh(new THREE.BoxGeometry(0.044, 0.046, 0.056), gloveMat);
+  // Sculpted palm & padded wrist bridge
+  const palm = new THREE.Mesh(createChamferedBoxGeo(0.042, 0.044, 0.056, 0.006), gloveMat);
   hand.add(palm);
 
-  // Armored knuckle ridge
-  const knuckle = new THREE.Mesh(new THREE.BoxGeometry(0.048, 0.013, 0.02), knuckleMat);
+  const wrist = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.026, 0.034, 10), gloveMat);
+  wrist.rotation.x = Math.PI / 2;
+  wrist.position.set(0, -0.004, 0.036);
+  hand.add(wrist);
+
+  // Articulated armored knuckle guard
+  const knuckle = new THREE.Mesh(createChamferedBoxGeo(0.046, 0.013, 0.02, 0.003), knuckleMat);
   knuckle.position.set(0, 0.019, -0.02);
   hand.add(knuckle);
 
+  const fingerGeo = new THREE.CapsuleGeometry(0.0055, 0.018, 4, 6);
   if (pose === 'grip' || pose === 'knife') {
     for (let i = 0; i < 3; i++) {
-      const finger = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.011, 0.026), gloveMat);
-      finger.position.set(0, -0.008 - i * 0.013, -0.032);
-      finger.rotation.x = 0.25;
+      const finger = new THREE.Mesh(fingerGeo, gloveMat);
+      finger.rotation.x = Math.PI / 2 + 0.32;
+      finger.position.set(-0.011 + i * 0.011, -0.008 - i * 0.009, -0.032);
       hand.add(finger);
     }
-    const indexFinger = new THREE.Mesh(new THREE.BoxGeometry(0.011, 0.011, 0.036), gloveMat);
+    const indexFinger = new THREE.Mesh(new THREE.CapsuleGeometry(0.0052, 0.024, 4, 6), gloveMat);
+    indexFinger.rotation.x = Math.PI / 2 + 0.1;
     indexFinger.position.set(0.017, 0.009, -0.038);
     hand.add(indexFinger);
 
-    const thumb = new THREE.Mesh(new THREE.BoxGeometry(0.013, 0.013, 0.034), gloveMat);
-    thumb.position.set(-0.024, 0.016, -0.016);
-    thumb.rotation.set(-0.3, 0.25, 0);
+    const thumb = new THREE.Mesh(new THREE.CapsuleGeometry(0.0065, 0.022, 4, 6), gloveMat);
+    thumb.position.set(-0.024, 0.015, -0.016);
+    thumb.rotation.set(Math.PI / 2 - 0.35, 0.25, 0);
     hand.add(thumb);
   } else {
     for (let i = 0; i < 4; i++) {
-      const finger = new THREE.Mesh(new THREE.BoxGeometry(0.01, 0.032, 0.012), gloveMat);
+      const finger = new THREE.Mesh(fingerGeo, gloveMat);
       finger.position.set(0.02, 0.015, -0.02 + i * 0.013);
-      finger.rotation.z = 0.34;
+      finger.rotation.z = 0.36;
       hand.add(finger);
     }
-    const thumb = new THREE.Mesh(new THREE.BoxGeometry(0.012, 0.03, 0.014), gloveMat);
+    const thumb = new THREE.Mesh(new THREE.CapsuleGeometry(0.0062, 0.02, 4, 6), gloveMat);
     thumb.position.set(-0.022, 0.015, -0.006);
-    thumb.rotation.z = -0.32;
+    thumb.rotation.z = -0.34;
     hand.add(thumb);
   }
 
@@ -209,9 +216,14 @@ export class WeaponSystem {
   private readonly leftArms = new Map<WeaponId, LeftArmRig>();
   private readonly muzzleSprites = new Map<WeaponId, THREE.Sprite>();
   private readonly muzzleCrosses = new Map<WeaponId, THREE.Group>();
+  private readonly laserEmitters = new Map<WeaponId, THREE.Object3D>();
   private readonly knifeGroup = new THREE.Group();
   private readonly bottleGroup = new THREE.Group();
   private readonly bottleLiquidMat: THREE.MeshStandardMaterial;
+  private laserBeam!: THREE.Mesh;
+  private laserBeamMat!: THREE.MeshBasicMaterial;
+  private laserDot!: THREE.Mesh;
+  private laserDotMat!: THREE.MeshBasicMaterial;
 
   // Muzzle lights (capped at 2 simultaneous per §4)
   private readonly muzzleLights: { light: THREE.PointLight; timer: number }[] = [];
@@ -225,9 +237,13 @@ export class WeaponSystem {
   private readonly shockwaves: ShockwaveItem[] = [];
   private readonly decals: THREE.Mesh[] = [];
   private decalCursor = 0;
+  private bulletDecalMat!: THREE.MeshBasicMaterial;
+  private bloodDecalMat!: THREE.MeshBasicMaterial;
+  private scorchDecalMat!: THREE.MeshBasicMaterial;
   private readonly phaseBolts: PhaseBolt[] = [];
   private phaseLight!: THREE.PointLight;
   private readonly activeGrenades: ActiveGrenade[] = [];
+  private readonly freeGrenadeMeshes: THREE.Group[] = [];
 
   private recoilOffsetZ = 0;
   private recoilOffsetPitch = 0;
@@ -241,6 +257,7 @@ export class WeaponSystem {
   private swayX = 0;
   private swayY = 0;
   private sprintBlend = 0;
+  private slidePoseBlend = 0;
   private bobPhase = 0;
   private muzzleFlashTimer = 0;
 
@@ -254,8 +271,13 @@ export class WeaponSystem {
 
   private readonly tmpOrigin = new THREE.Vector3();
   private readonly tmpMuzzlePos = new THREE.Vector3();
+  private readonly tmpLaserStart = new THREE.Vector3();
+  private readonly tmpLaserEnd = new THREE.Vector3();
   private readonly tmpDir = new THREE.Vector3();
+  private readonly tmpShotDir = new THREE.Vector3();
   private readonly tmpVec = new THREE.Vector3();
+  private readonly tmpVecB = new THREE.Vector3();
+  private readonly tmpVecC = new THREE.Vector3();
   private readonly tmpRight = new THREE.Vector3();
   private readonly tmpUp = new THREE.Vector3();
   private readonly tmpQuat = new THREE.Quaternion();
@@ -655,11 +677,22 @@ export class WeaponSystem {
       );
       lens.position.set(0, slideTopY + 0.024, opticZ);
       const redDot = new THREE.Mesh(
-        new THREE.SphereGeometry(0.002, 8, 8),
-        new THREE.MeshBasicMaterial({ color: 0xff2a2a }),
+        new THREE.SphereGeometry(0.0022, 8, 8),
+        new THREE.MeshBasicMaterial({ color: 0xff3b30 }),
       );
       redDot.position.set(0, slideTopY + 0.026, opticZ + 0.002);
-      g.add(opticBase, frameL, frameR, frameTop, lens, redDot);
+      const reticleRing = new THREE.Mesh(
+        new THREE.RingGeometry(0.0046, 0.0056, 16),
+        new THREE.MeshBasicMaterial({
+          color: 0xff453a,
+          transparent: true,
+          opacity: 0.45,
+          side: THREE.DoubleSide,
+          depthWrite: false,
+        }),
+      );
+      reticleRing.position.set(0, slideTopY + 0.026, opticZ + 0.001);
+      g.add(opticBase, frameL, frameR, frameTop, lens, redDot, reticleRing);
     } else if (id !== 'service_pistol') {
       const rearSight = new THREE.Mesh(new THREE.BoxGeometry(0.024, 0.014, 0.016), mats.gunMetal);
       rearSight.position.set(0, slideTopY + 0.007, -spec.len * 0.02);
@@ -674,6 +707,25 @@ export class WeaponSystem {
       const rearDotR = rearDotL.clone();
       rearDotR.position.x = 0.007;
       g.add(frontDot, rearDotL, rearDotR);
+    }
+
+    // Compact tactical underbarrel/side laser emitter housing on modern firearms
+    if (id === 'service_pistol' || id === 'rattler' || id === 'ironsight' || id === 'hammerfall') {
+      const laserBox = new THREE.Mesh(
+        new THREE.BoxGeometry(0.016, 0.015, 0.044),
+        mats.darkTrim,
+      );
+      const lx = id === 'service_pistol' ? 0 : spec.width * 0.52 + 0.004;
+      const ly = id === 'service_pistol' ? recY - recH * 0.68 : slideY - 0.004;
+      const lz = id === 'service_pistol' ? -spec.len * 0.44 : -spec.len * 0.56;
+      laserBox.position.set(lx, ly, lz);
+      const emitterLens = new THREE.Mesh(
+        new THREE.CircleGeometry(0.0042, 8),
+        new THREE.MeshBasicMaterial({ color: 0x34d399 }),
+      );
+      emitterLens.position.set(lx, ly, lz - 0.023);
+      emitterLens.rotation.y = Math.PI;
+      g.add(laserBox, emitterLens);
     }
 
     // Overclock dual neon energy rails & glowing muzzle collar
@@ -716,8 +768,12 @@ export class WeaponSystem {
     this.recoilOffsetPitch = 0;
     this.recoilBloom = 0;
     this.sprintBlend = 0;
+    this.slidePoseBlend = 0;
+    if (this.laserBeam) this.laserBeam.visible = false;
+    if (this.laserDot) this.laserDot.visible = false;
     this.activeGrenades.forEach((g) => {
-      this.scene.remove(g.mesh);
+      g.mesh.visible = false;
+      this.freeGrenadeMeshes.push(g.mesh);
       this.physics.removeGrenadeBody(g.rb.id);
     });
     this.activeGrenades.length = 0;
@@ -759,14 +815,31 @@ export class WeaponSystem {
     return BALANCE.weapons[this.getActiveWeapon().id];
   }
 
+  public getAdsSpeed(): number {
+    const id = this.getActiveWeapon().id;
+    switch (id) {
+      case 'service_pistol':
+        return 19;
+      case 'rattler':
+        return 16;
+      case 'longbow':
+        return 11.5;
+      case 'hammerfall':
+        return 10.5;
+      default:
+        return 14.5;
+    }
+  }
+
   public getCrosshairSpread(player: PlayerController): number {
     const cfg = this.getActiveConfig();
-    const base = player.isAds ? cfg.spreadAds : cfg.spreadHip;
+    const breathMult = player.isHoldingBreath ? 0.45 : 1.0;
+    const base = THREE.MathUtils.lerp(cfg.spreadHip, cfg.spreadAds, player.adsBlend) * breathMult;
     const moveSpeed = Math.hypot(player.velocity.x, player.velocity.z);
     const moveFactor = Math.min(1, moveSpeed / BALANCE.player.sprintSpeed);
-    const sprintBoost = player.isSprinting ? 0.45 : moveFactor * 0.2;
-    const crouchTighten = player.isCrouching ? 0.72 : 1.0;
-    const normalized = Math.min(1, base * 11 * crouchTighten + sprintBoost + this.recoilBloom);
+    const sprintBoost = player.isSprinting ? 0.45 : player.isSliding ? 0.14 : moveFactor * 0.2;
+    const stanceTighten = player.isCrouching || player.isSliding ? 0.72 : 1.0;
+    const normalized = Math.min(1, base * 11 * stanceTighten + sprintBoost + this.recoilBloom);
     return Number(normalized.toFixed(3));
   }
 
@@ -966,6 +1039,15 @@ export class WeaponSystem {
       crossGrp.visible = false;
       g.add(crossGrp);
 
+      const laserAnchor = new THREE.Object3D();
+      laserAnchor.position.set(
+        id === 'service_pistol' ? 0 : spec.width * 0.52 + 0.004,
+        id === 'service_pistol' ? -0.028 : spec.height * 0.22,
+        -spec.len * 0.52,
+      );
+      g.add(laserAnchor);
+      this.laserEmitters.set(id, laserAnchor);
+
       this.muzzleSprites.set(id, mf);
       this.muzzleCrosses.set(id, crossGrp);
       this.weaponModels.set(id, g);
@@ -1022,7 +1104,12 @@ export class WeaponSystem {
     this.viewmodelRoot.add(this.bottleGroup);
   }
 
-  private buildGrenadeMesh(): THREE.Group {
+  private acquireGrenadeMesh(): THREE.Group {
+    const recycled = this.freeGrenadeMeshes.pop();
+    if (recycled) {
+      recycled.visible = true;
+      return recycled;
+    }
     if (!this.grenadeAssets) {
       this.grenadeAssets = {
         bodyGeo: new THREE.SphereGeometry(0.088, 12, 10),
@@ -1065,6 +1152,7 @@ export class WeaponSystem {
     pinRing.position.set(-0.035, 0.12, 0);
     grp.add(pinRing);
 
+    this.scene.add(grp);
     return grp;
   }
 
@@ -1190,20 +1278,70 @@ export class WeaponSystem {
       this.shockwaves.push({ mesh, life: 0, maxLife: 0.35, maxRadius: 4.5, active: false });
     }
 
+    // Shared decal materials (prevents shader recompilation / per-decal needsUpdate churn)
+    this.bulletDecalMat = new THREE.MeshBasicMaterial({
+      map: this.mats.bulletHoleTex,
+      transparent: true,
+      depthWrite: false,
+      polygonOffset: true,
+      polygonOffsetFactor: -2,
+    });
+    this.bloodDecalMat = new THREE.MeshBasicMaterial({
+      map: this.mats.bloodSplatterTex,
+      transparent: true,
+      depthWrite: false,
+      polygonOffset: true,
+      polygonOffsetFactor: -2,
+    });
+    this.scorchDecalMat = new THREE.MeshBasicMaterial({
+      map: this.mats.scorchDecalTex,
+      transparent: true,
+      depthWrite: false,
+      polygonOffset: true,
+      polygonOffsetFactor: -2,
+    });
+
     // Pooled decals (bullet holes, blood & scorch)
     const dGeo = new THREE.PlaneGeometry(0.24, 0.24);
     for (let i = 0; i < BALANCE.perf.maxDecals; i++) {
-      const mat = new THREE.MeshBasicMaterial({
-        map: this.mats.bulletHoleTex,
-        transparent: true,
-        depthWrite: false,
-        polygonOffset: true,
-        polygonOffsetFactor: -2,
-      });
-      const decal = new THREE.Mesh(dGeo, mat);
+      const decal = new THREE.Mesh(dGeo, this.bulletDecalMat);
       decal.visible = false;
       this.scene.add(decal);
       this.decals.push(decal);
+    }
+
+    // Tactical Laser Sight Beam + Projected Dot
+    const beamGeo = new THREE.CylinderGeometry(0.0014, 0.0014, 1, 5);
+    beamGeo.rotateX(Math.PI / 2);
+    beamGeo.translate(0, 0, 0.5);
+    this.laserBeamMat = new THREE.MeshBasicMaterial({
+      color: 0x18ff60,
+      transparent: true,
+      opacity: 0.42,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+    this.laserBeam = new THREE.Mesh(beamGeo, this.laserBeamMat);
+    this.laserBeam.visible = false;
+    this.laserBeam.frustumCulled = false;
+    this.scene.add(this.laserBeam);
+
+    this.laserDotMat = new THREE.MeshBasicMaterial({
+      color: 0x2dff74,
+      transparent: true,
+      opacity: 0.96,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+    this.laserDot = new THREE.Mesh(new THREE.SphereGeometry(0.013, 8, 8), this.laserDotMat);
+    this.laserDot.visible = false;
+    this.scene.add(this.laserDot);
+
+    // Pre-pool 4 reusable frag grenade meshes
+    for (let i = 0; i < 4; i++) {
+      const gMesh = this.acquireGrenadeMesh();
+      gMesh.visible = false;
+      this.freeGrenadeMeshes.push(gMesh);
     }
 
     // Phase Cannon energy bolts
@@ -1362,19 +1500,18 @@ export class WeaponSystem {
       }
     }
 
-    // Throw composite frag grenade
+    // Throw composite frag grenade (zero mesh/material alloc via pool)
     if (input.grenadePressed && player.grenades > 0 && !player.isReviving) {
       player.grenades--;
       this.camera.getWorldPosition(this.tmpOrigin);
       this.camera.getWorldDirection(this.tmpDir);
-      const spawnP = this.tmpOrigin.clone().addScaledVector(this.tmpDir, 0.55);
+      this.tmpVec.copy(this.tmpOrigin).addScaledVector(this.tmpDir, 0.55);
       const vx = this.tmpDir.x * BALANCE.player.grenadeThrowSpeed;
       const vy = this.tmpDir.y * BALANCE.player.grenadeThrowSpeed + 3.5;
       const vz = this.tmpDir.z * BALANCE.player.grenadeThrowSpeed;
-      const rb = this.physics.spawnGrenadeBody(spawnP.x, spawnP.y, spawnP.z, vx, vy, vz);
-      const mesh = this.buildGrenadeMesh();
-      mesh.position.copy(spawnP);
-      this.scene.add(mesh);
+      const rb = this.physics.spawnGrenadeBody(this.tmpVec.x, this.tmpVec.y, this.tmpVec.z, vx, vy, vz);
+      const mesh = this.acquireGrenadeMesh();
+      mesh.position.copy(this.tmpVec);
       this.activeGrenades.push({ rb, mesh, fuse: BALANCE.player.grenadeFuse });
     }
 
@@ -1393,8 +1530,14 @@ export class WeaponSystem {
       player.drinkAnimTimer <= 0
     ) {
       this.fireBufferTimer = 0;
-      if (player.isSprinting) {
+      if (player.isSprinting || this.sprintBlend > 0.01) {
         player.triggerSprintFireCancel();
+        this.sprintBlend = 0;
+        this.weaponPivot.rotation.set(
+          this.recoilOffsetPitch,
+          (1 - player.adsBlend) * 0.032,
+          player.strafeTilt,
+        );
       }
       if (cfg.fireMode !== 'auto') {
         this.semiTriggerConsumed = true;
@@ -1442,14 +1585,15 @@ export class WeaponSystem {
     this.fireCooldown = 60 / effectiveRpm;
 
     this.audio.playGunshot(active.id, active.upgraded);
+    const adsRecoilMult = THREE.MathUtils.lerp(1.0, 0.52, player.adsBlend) * (player.isHoldingBreath ? 0.72 : 1.0);
     player.addRecoil(
-      cfg.recoilPitch * (player.isAds ? 0.52 : 1.0),
-      (Math.random() - 0.5) * cfg.recoilYaw * (player.isAds ? 1.2 : 2.0),
-      cfg.cameraKick * (player.isAds ? 0.65 : 1.0),
+      cfg.recoilPitch * adsRecoilMult,
+      (Math.random() - 0.5) * cfg.recoilYaw * THREE.MathUtils.lerp(2.0, 1.15, player.adsBlend),
+      cfg.cameraKick * THREE.MathUtils.lerp(1.0, 0.62, player.adsBlend),
     );
-    this.recoilOffsetZ = Math.min(0.085, this.recoilOffsetZ + (player.isAds ? 0.038 : 0.06));
-    this.recoilOffsetPitch = Math.min(0.24, this.recoilOffsetPitch + (player.isAds ? 0.085 : 0.135));
-    this.recoilBloom = Math.min(0.65, this.recoilBloom + (player.isAds ? 0.08 : 0.22));
+    this.recoilOffsetZ = Math.min(0.085, this.recoilOffsetZ + THREE.MathUtils.lerp(0.06, 0.034, player.adsBlend));
+    this.recoilOffsetPitch = Math.min(0.24, this.recoilOffsetPitch + THREE.MathUtils.lerp(0.135, 0.075, player.adsBlend));
+    this.recoilBloom = Math.min(0.65, this.recoilBloom + THREE.MathUtils.lerp(0.22, 0.07, player.adsBlend));
     this.slideKick = 0.044;
     if (active.id === 'hedgerow') {
       this.pumpTimer = Math.min(0.55, this.fireCooldown * 0.85);
@@ -1469,21 +1613,21 @@ export class WeaponSystem {
     ml.light.intensity = 3.2;
     ml.timer = 0.05;
 
-    // Spinning 3D brass shell ejection + barrel smoke puff
+    // Spinning 3D brass shell ejection + barrel smoke puff (zero Vector3 clones)
     if (active.id !== 'phase_cannon') {
-      const ejectPos = this.tmpOrigin
-        .clone()
+      this.tmpVec
+        .copy(this.tmpOrigin)
         .addScaledVector(this.tmpDir, 0.38)
         .addScaledVector(this.tmpRight, 0.19)
         .addScaledVector(this.tmpUp, -0.09);
-      this.spawnShellCasing(ejectPos, this.tmpRight, this.tmpUp, this.tmpDir);
+      this.spawnShellCasing(this.tmpVec, this.tmpRight, this.tmpUp, this.tmpDir);
     }
-    const muzzleSmokePos = this.tmpOrigin
-      .clone()
+    this.tmpVec
+      .copy(this.tmpOrigin)
       .addScaledVector(this.tmpDir, 0.85)
-      .addScaledVector(this.tmpRight, player.isAds ? 0 : 0.12)
+      .addScaledVector(this.tmpRight, (1 - player.adsBlend) * 0.12)
       .addScaledVector(this.tmpUp, -0.06);
-    this.spawnSmokePuff(muzzleSmokePos, this.tmpDir);
+    this.spawnSmokePuff(this.tmpVec, this.tmpDir);
 
     // Phase Cannon fires slow energy bolt
     if (cfg.fireMode === 'projectile') {
@@ -1503,7 +1647,8 @@ export class WeaponSystem {
       return;
     }
 
-    // Compute world muzzle position so tracers visibly streak from the barrel crown
+    // Sync weaponPivot world matrix BEFORE sampling muzzle crown so tracers lock onto the actual barrel tip
+    this.weaponPivot.updateMatrixWorld(true);
     const activeMuzzle = this.muzzleSprites.get(active.id);
     if (activeMuzzle) {
       activeMuzzle.getWorldPosition(this.tmpMuzzlePos);
@@ -1511,8 +1656,13 @@ export class WeaponSystem {
       this.tmpMuzzlePos.copy(this.tmpOrigin).addScaledVector(this.tmpDir, 0.65);
     }
 
-    // Hitscan pellets
-    const spread = player.isAds ? cfg.spreadAds : cfg.spreadHip;
+    // Hitscan pellets with smooth adsBlend + hold-breath + stance accuracy
+    const breathSpreadMult = player.isHoldingBreath ? 0.35 : 1.0;
+    const stanceSpreadMult = player.isCrouching || player.isSliding ? 0.82 : 1.0;
+    const spread =
+      THREE.MathUtils.lerp(cfg.spreadHip, cfg.spreadAds, player.adsBlend) *
+      breathSpreadMult *
+      stanceSpreadMult;
     const baseDamage =
       cfg.damage *
       (active.upgraded ? BALANCE.overclock.damageMult : 1.0) *
@@ -1526,15 +1676,20 @@ export class WeaponSystem {
     for (let p = 0; p < cfg.pellets; p++) {
       const sx = (Math.random() - 0.5) * spread * 2;
       const sy = (Math.random() - 0.5) * spread * 2;
-      const shotDir = this.tmpDir
-        .clone()
+      this.tmpShotDir
+        .copy(this.tmpDir)
         .addScaledVector(this.tmpRight, sx)
         .addScaledVector(this.tmpUp, sy)
         .normalize();
 
-      const worldHit = this.bvh.raycast(this.tmpOrigin, shotDir, 120);
+      const worldHit = this.bvh.raycastFast(this.tmpOrigin, this.tmpShotDir, 120);
       const maxZDist = worldHit ? worldHit.distance : 120;
-      const zHit = this.zombies.raycastShot(this.tmpOrigin, shotDir, maxZDist);
+      if (worldHit) {
+        this.tmpVecB.copy(worldHit.point);
+        this.tmpVecC.copy(worldHit.normal);
+      }
+      const worldSurface = worldHit?.surface ?? 'concrete';
+      const zHit = this.zombies.raycastShot(this.tmpOrigin, this.tmpShotDir, maxZDist);
 
       if (zHit) {
         anyHit = true;
@@ -1545,8 +1700,8 @@ export class WeaponSystem {
           zHit.poolIdx,
           dmg,
           zHit.hitZone,
-          shotDir.x,
-          shotDir.z,
+          this.tmpShotDir.x,
+          this.tmpShotDir.z,
           instaKill,
         );
 
@@ -1588,21 +1743,21 @@ export class WeaponSystem {
           );
         }
       } else if (worldHit) {
-        this.spawnImpactBySurface(worldHit.point, worldHit.normal, worldHit.surface);
-        this.spawnDecal(worldHit.point, worldHit.normal, 'bullet');
-        this.audio.playSurfaceImpact(worldHit.surface, worldHit.point.x, worldHit.point.y, worldHit.point.z);
+        this.spawnImpactBySurface(this.tmpVecB, this.tmpVecC, worldSurface);
+        this.spawnDecal(this.tmpVecB, this.tmpVecC, 'bullet');
+        this.audio.playSurfaceImpact(worldSurface, this.tmpVecB.x, this.tmpVecB.y, this.tmpVecB.z);
         if (cfg.hasTracer && p === 0) {
           this.spawnTracer(
             this.tmpMuzzlePos,
-            worldHit.point,
+            this.tmpVecB,
             active.upgraded ? cfg.upgradedTracerColor : cfg.tracerColor,
           );
         }
       } else if (cfg.hasTracer && p === 0) {
-        const end = this.tmpOrigin.clone().addScaledVector(shotDir, 60);
+        this.tmpVec.copy(this.tmpOrigin).addScaledVector(this.tmpShotDir, 60);
         this.spawnTracer(
           this.tmpMuzzlePos,
-          end,
+          this.tmpVec,
           active.upgraded ? cfg.upgradedTracerColor : cfg.tracerColor,
         );
       }
@@ -1643,16 +1798,18 @@ export class WeaponSystem {
     this.lookSwayX = THREE.MathUtils.damp(this.lookSwayX, 0, 11, dt);
     this.lookSwayY = THREE.MathUtils.damp(this.lookSwayY, 0, 11, dt);
 
-    // Wall-clip prevention raycast
+    // Wall-clip prevention zero-alloc raycast
     this.camera.getWorldPosition(this.tmpOrigin);
     this.camera.getWorldDirection(this.tmpDir);
-    const wallCheck = this.bvh.raycast(this.tmpOrigin, this.tmpDir, 0.85);
+    const wallCheck = this.bvh.raycastFast(this.tmpOrigin, this.tmpDir, 0.85);
     const wallPushback = wallCheck ? Math.max(0, 0.85 - wallCheck.distance) * 0.45 : 0;
 
     // Perk drink bottle uncork/gulp animation
     if (player.drinkAnimTimer > 0) {
       this.weaponPivot.visible = false;
       this.knifeGroup.visible = false;
+      this.laserBeam.visible = false;
+      this.laserDot.visible = false;
       this.bottleGroup.visible = true;
       this.bottleLiquidMat.color.setHex(player.drinkPerkColor);
       this.bottleLiquidMat.emissive.setHex(player.drinkPerkColor);
@@ -1674,6 +1831,8 @@ export class WeaponSystem {
     if (player.knifeAnimTimer > 0) {
       this.weaponPivot.visible = false;
       this.knifeGroup.visible = true;
+      this.laserBeam.visible = false;
+      this.laserDot.visible = false;
       const t = 1 - player.knifeAnimTimer / 0.3;
       const swing = t < 0.55 ? t / 0.55 : 1 - (t - 0.55) / 0.45;
       const eased = Math.sin(swing * Math.PI * 0.5);
@@ -1693,12 +1852,13 @@ export class WeaponSystem {
     this.knifeGroup.visible = false;
     this.weaponPivot.visible = true;
 
-    const activeId = this.getActiveWeapon().id;
-    const adsAlpha = player.isAds ? 1 : 0;
+    const activeWeapon = this.getActiveWeapon();
+    const activeId = activeWeapon.id;
+    const adsAlpha = player.adsBlend;
     const adsY = ADS_EYE_Y[cfg.id];
-    const targetX = THREE.MathUtils.lerp(0.168, 0.0, adsAlpha);
-    const targetY = THREE.MathUtils.lerp(-0.142, adsY, adsAlpha);
-    const targetZ = THREE.MathUtils.lerp(-0.315, -0.238, adsAlpha) + this.recoilOffsetZ + wallPushback;
+    const targetX = THREE.MathUtils.lerp(0.18, 0.0, adsAlpha);
+    const targetY = THREE.MathUtils.lerp(-0.15, adsY, adsAlpha);
+    const targetZ = THREE.MathUtils.lerp(-0.325, -0.238, adsAlpha) + this.recoilOffsetZ + wallPushback;
 
     const horizSpeed = Math.hypot(player.velocity.x, player.velocity.z);
     const moveAmt = Math.min(1, horizSpeed / 5);
@@ -1706,19 +1866,20 @@ export class WeaponSystem {
     const cadence = player.isSprinting ? 13.5 : 8.2;
     this.bobPhase += dt * cadence * (0.25 + moveAmt * 0.75);
 
-    // Subtle idle breathing + crisp locomotion sway (rock-steady when ADS)
-    const adsSteadiness = 1 - adsAlpha * 0.9;
+    // Subtle idle breathing + crisp locomotion sway (rock-steady when ADS or holding breath)
+    const breathSteady = player.isHoldingBreath ? 0.3 : 1.0;
+    const adsSteadiness = (1 - adsAlpha * 0.92) * breathSteady;
     const idleX = Math.sin(tNow * 1.4) * 0.002 * adsSteadiness;
     const idleY = Math.cos(tNow * 2.1) * 0.002 * adsSteadiness;
-    const bobAmp = player.isSprinting ? 0.019 : 0.008;
+    const bobAmp = player.isSprinting ? 0.019 : player.isSliding ? 0.002 : 0.008;
     this.swayX =
       Math.cos(this.bobPhase) * bobAmp * moveAmt * adsSteadiness +
       idleX +
-      this.lookSwayX * (1 - adsAlpha * 0.72);
+      this.lookSwayX * (1 - adsAlpha * 0.76);
     this.swayY =
       Math.abs(Math.sin(this.bobPhase)) * bobAmp * 0.85 * moveAmt * adsSteadiness +
       idleY +
-      this.lookSwayY * (1 - adsAlpha * 0.72);
+      this.lookSwayY * (1 - adsAlpha * 0.76);
 
     // CoD-style Multi-stage Reload Choreography (Tilt -> Mag Drop -> Left Hand Slam -> Slide Rack)
     const reloadFrac = this.isReloading ? this.reloadTimer / Math.max(0.1, this.reloadDuration) : 0;
@@ -1756,7 +1917,6 @@ export class WeaponSystem {
     if (activeId === 'hedgerow' && this.pumpTimer > 0) {
       const pDur = Math.min(0.55, this.fireCooldown * 0.85);
       const pFrac = 1 - this.pumpTimer / Math.max(0.05, pDur);
-      // Slight delay right after blast so recoil finishes, then sharp pump back-and-forward
       if (pFrac > 0.18 && pFrac < 0.88) {
         pumpBack = Math.sin(((pFrac - 0.18) / 0.7) * Math.PI) * 0.088;
       }
@@ -1766,10 +1926,12 @@ export class WeaponSystem {
       pumpObj.mesh.position.z = pumpObj.baseZ + pumpBack;
     }
 
-    // Recoil blowback + reload rack on weapon slide / bolt carrier
+    // Recoil blowback + empty-mag slide lockback + reload rack on weapon slide / bolt carrier
     const slideObj = this.weaponSlides.get(activeId);
     if (slideObj) {
-      slideObj.mesh.position.z = slideObj.baseZ + this.slideKick + rackPull;
+      const lockBack =
+        activeId === 'service_pistol' && activeWeapon.mag === 0 && !this.isReloading ? 0.03 : 0;
+      slideObj.mesh.position.z = slideObj.baseZ + this.slideKick + rackPull + lockBack;
     }
 
     // Left Support Arm Animation (Pump follow-through, Mag Swap, Bolt Rack)
@@ -1805,7 +1967,7 @@ export class WeaponSystem {
       }
     }
 
-    // Tactical Diagonal Sprint Carry vs Inspect Spin vs Ready Aim (silky smoothed blend)
+    // Tactical Diagonal Sprint Carry vs Canted Slide Pose vs Inspect Spin vs Ready Aim
     const targetSprint = player.isSprinting && !this.isReloading ? 1 : 0;
     this.sprintBlend = THREE.MathUtils.damp(this.sprintBlend, targetSprint, 14, dt);
     const sprintFactor = this.sprintBlend;
@@ -1814,6 +1976,12 @@ export class WeaponSystem {
     const sprintRotX = sprintFactor * -0.14;
     const sprintRotY = sprintFactor * 0.62;
     const sprintRotZ = sprintFactor * 0.34;
+
+    const targetSlidePose = player.isSliding && !this.isReloading && !player.isAds ? 1 : 0;
+    this.slidePoseBlend = THREE.MathUtils.damp(this.slidePoseBlend, targetSlidePose, 16, dt);
+    const slidePosX = this.slidePoseBlend * -0.032;
+    const slidePosY = this.slidePoseBlend * -0.018;
+    const slideRotZ = this.slidePoseBlend * 0.36;
 
     let inspectPosX = 0;
     let inspectPosY = 0;
@@ -1837,27 +2005,40 @@ export class WeaponSystem {
     this.weaponPivot.position.set(
       THREE.MathUtils.damp(
         this.weaponPivot.position.x,
-        targetX + this.swayX + sprintPosX + inspectPosX - reloadTilt * 0.04,
-        18,
+        targetX + this.swayX + sprintPosX + slidePosX + inspectPosX - reloadTilt * 0.04,
+        20,
         dt,
       ),
       THREE.MathUtils.damp(
         this.weaponPivot.position.y,
-        targetY - this.swayY + swapDrop + sprintPosY + inspectPosY - reloadTilt * 0.1 + reloadBumpY,
-        18,
+        targetY -
+          this.swayY +
+          swapDrop +
+          sprintPosY +
+          slidePosY +
+          inspectPosY -
+          reloadTilt * 0.1 +
+          reloadBumpY +
+          player.weaponLandDip * (1 - adsAlpha * 0.65),
+        20,
         dt,
       ),
       THREE.MathUtils.damp(
         this.weaponPivot.position.z,
         targetZ + inspectPosZ,
-        18,
+        20,
         dt,
       ),
     );
     this.weaponPivot.rotation.set(
       this.recoilOffsetPitch - reloadTilt * 0.34 + sprintRotX + inspectRotX + this.lookSwayY * 2.2,
       (1 - adsAlpha) * 0.032 + sprintRotY + inspectRotY - reloadTilt * 0.3 + this.lookSwayX * 2.8,
-      reloadTilt * 0.56 + sprintRotZ + inspectRotZ - this.lookSwayX * 3.5,
+      reloadTilt * 0.56 +
+        sprintRotZ +
+        slideRotZ +
+        inspectRotZ -
+        this.lookSwayX * 3.5 +
+        player.strafeTilt * 1.4,
     );
 
     const mf = this.muzzleSprites.get(activeId);
@@ -1874,6 +2055,61 @@ export class WeaponSystem {
         const s = 0.8 + Math.random() * 0.5;
         mc.scale.set(s, s, s);
       }
+    }
+
+    // Tactical Laser Sight projection (visible when weapon ready; dims seamlessly in ADS)
+    const showLaser =
+      this.sprintBlend < 0.3 &&
+      !this.isReloading &&
+      this.swapTimer <= 0 &&
+      this.inspectTimer <= 0 &&
+      !(activeId === 'longbow' && adsAlpha > 0.65);
+
+    if (showLaser) {
+      this.weaponPivot.updateMatrixWorld(true);
+      const emitter = this.laserEmitters.get(activeId);
+      if (emitter) {
+        emitter.getWorldPosition(this.tmpLaserStart);
+      } else {
+        this.tmpLaserStart.copy(this.tmpOrigin).addScaledVector(this.tmpDir, 0.55);
+      }
+      const wHit = this.bvh.raycastFast(this.tmpOrigin, this.tmpDir, 45);
+      const maxD = wHit ? wHit.distance : 45;
+      const zHit = this.zombies.raycastShot(this.tmpOrigin, this.tmpDir, maxD);
+      let hitDist = 45;
+      if (zHit) {
+        this.tmpLaserEnd.copy(zHit.point);
+        hitDist = zHit.distance;
+      } else if (wHit) {
+        this.tmpLaserEnd.copy(wHit.point);
+        hitDist = wHit.distance;
+      } else {
+        this.tmpLaserEnd.copy(this.tmpOrigin).addScaledVector(this.tmpDir, 45);
+      }
+
+      const beamLen = this.tmpLaserStart.distanceTo(this.tmpLaserEnd);
+      if (beamLen > 0.2) {
+        this.laserBeam.position.copy(this.tmpLaserStart);
+        this.laserBeam.scale.set(1, 1, beamLen);
+        this.laserBeam.lookAt(this.tmpLaserEnd);
+        this.laserBeamMat.opacity = 0.3 * (1 - adsAlpha * 0.82);
+        this.laserBeam.visible = this.laserBeamMat.opacity > 0.025;
+      } else {
+        this.laserBeam.visible = false;
+      }
+
+      if (zHit || wHit) {
+        this.laserDot.position.copy(this.tmpLaserEnd).addScaledVector(this.tmpDir, -0.02);
+        const dotScale = THREE.MathUtils.clamp(hitDist * 0.065, 0.7, 2.3);
+        this.laserDot.scale.setScalar(dotScale);
+        this.laserDotMat.opacity = (zHit ? 0.98 : 0.86) * (1 - adsAlpha * 0.45);
+        this.laserDot.visible = true;
+      } else {
+        this.laserDot.visible = false;
+      }
+    } else {
+      this.laserBeam.visible = false;
+      this.laserDot.visible = false;
     }
   }
 
@@ -2050,13 +2286,12 @@ export class WeaponSystem {
       g.fuse -= dt;
       if (g.fuse <= 0) {
         this.audio.playExplosion(t.x, t.y, t.z);
-        this.spawnParticles(new THREE.Vector3(t.x, t.y + 0.2, t.z), 0xf97316, 22, 6.5);
+        this.tmpVec.set(t.x, t.y + 0.2, t.z);
+        this.spawnParticles(this.tmpVec, 0xf97316, 22, 6.5);
         this.spawnShockwave(t.x, 0.08, t.z, BALANCE.player.grenadeRadius, 0xf97316);
-        this.spawnDecal(
-          new THREE.Vector3(t.x, 0.03, t.z),
-          new THREE.Vector3(0, 1, 0),
-          'scorch',
-        );
+        this.tmpVec.set(t.x, 0.03, t.z);
+        this.tmpVecB.set(0, 1, 0);
+        this.spawnDecal(this.tmpVec, this.tmpVecB, 'scorch');
         const kills = this.zombies.applySplashDamage(
           t.x,
           t.y,
@@ -2071,7 +2306,8 @@ export class WeaponSystem {
           },
         );
         if (kills > 0) callbacks.onHitMarker('kill');
-        this.scene.remove(g.mesh);
+        g.mesh.visible = false;
+        this.freeGrenadeMeshes.push(g.mesh);
         this.physics.removeGrenadeBody(g.rb.id);
         this.activeGrenades.splice(i, 1);
       }
@@ -2099,7 +2335,8 @@ export class WeaponSystem {
       wood: 0x92623a,
       dirt: 0x57534e,
     };
-    this.spawnParticles(point.clone().addScaledVector(normal, 0.04), colorMap[surface], 6, 3.2);
+    this.tmpVec.copy(point).addScaledVector(normal, 0.04);
+    this.spawnParticles(this.tmpVec, colorMap[surface], 6, 3.2);
   }
 
   public spawnParticles(origin: THREE.Vector3, colorHex: number, count: number, speed: number): void {
@@ -2148,8 +2385,8 @@ export class WeaponSystem {
     if (dist < 0.5) return;
     t.active = true;
     t.life = 0.06;
-    const mid = start.clone().lerp(end, 0.5);
-    t.line.position.copy(mid);
+    this.tmpVec.copy(start).lerp(end, 0.5);
+    t.line.position.copy(this.tmpVec);
     t.line.scale.set(1, 1, dist);
     t.line.lookAt(end);
     (t.line.material as THREE.MeshBasicMaterial).color.setHex(colorHex);
@@ -2163,14 +2400,12 @@ export class WeaponSystem {
   ): void {
     const decal = this.decals[this.decalCursor]!;
     this.decalCursor = (this.decalCursor + 1) % this.decals.length;
-    const mat = decal.material as THREE.MeshBasicMaterial;
-    mat.map =
+    decal.material =
       kind === 'blood'
-        ? this.mats.bloodSplatterTex
+        ? this.bloodDecalMat
         : kind === 'scorch'
-          ? this.mats.scorchDecalTex
-          : this.mats.bulletHoleTex;
-    mat.needsUpdate = true;
+          ? this.scorchDecalMat
+          : this.bulletDecalMat;
 
     const scale =
       kind === 'scorch'
@@ -2180,7 +2415,8 @@ export class WeaponSystem {
           : 0.45 + Math.random() * 0.25;
     decal.scale.set(scale, scale, 1);
     decal.position.copy(point).addScaledVector(normal, 0.025);
-    decal.lookAt(point.clone().add(normal));
+    this.tmpVec.copy(point).add(normal);
+    decal.lookAt(this.tmpVec);
     decal.rotateZ(Math.random() * Math.PI * 2);
     decal.visible = true;
   }
