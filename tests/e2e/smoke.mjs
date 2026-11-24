@@ -612,7 +612,50 @@ async function run() {
   if (occludedAfter.health < occludedAudit.health && occludedAfter.losCount === 0) {
     throw new Error(`Wall-occluded phantom damage leaked when no zombie had LOS: ${JSON.stringify(occludedAfter)}`);
   }
-  console.log('[E2E] Round 4 off-screen flanking chevrons, above-floor visibility & wall-occlusion verified.');
+
+  // Verify wall-backed close-quarters standoff (>= 1.05m) & turning toward threat clears offscreen arrow when centered in 16:9 FOV
+  await page.evaluate(() => {
+    const dbg = window.__HOLLOWFIELD_DEBUG__;
+    dbg.jumpToRound(4);
+    dbg.spawnAllZombiesTest(6);
+    // Stand in Farmhouse backed close to the west wall at (-13.1, 18.0) facing away (+X)
+    dbg.setPlayerPose(-13.1, 0.9, 18.0, -Math.PI * 0.5, 0);
+  });
+  await page.waitForTimeout(1600);
+  const closeAudit = await page.evaluate(() => {
+    const pose = window.__HOLLOWFIELD_DEBUG__.getPlayerPose();
+    const zs = window.__HOLLOWFIELD_DEBUG__.getZombies();
+    const chasing = zs.filter((z) => z.state === 'chase' || z.state === 'attack');
+    let minDist = Infinity;
+    let nearest = null;
+    for (const z of chasing) {
+      const d = Math.hypot(z.x - pose.x, z.z - pose.z);
+      if (d < minDist) {
+        minDist = d;
+        nearest = z;
+      }
+    }
+    if (nearest) {
+      const dx = nearest.x - pose.x;
+      const dz = nearest.z - pose.z;
+      const yawTo = Math.atan2(-dx, -dz);
+      window.__HOLLOWFIELD_DEBUG__.setPlayerPose(pose.x, pose.y, pose.z, yawTo, 0);
+    }
+    return { minDist, nearestId: nearest?.id ?? null };
+  });
+  await page.waitForTimeout(150);
+  const afterTurnAudit = await page.evaluate((nearestId) => {
+    const st = window.__HOLLOWFIELD_DEBUG__.getState();
+    const hasArrowForCentered = (st.offscreenThreats || []).some((t) => t.id === nearestId);
+    return { hasArrowForCentered, threats: st.offscreenThreats };
+  }, closeAudit.nearestId);
+  if (closeAudit.minDist < 1.05) {
+    throw new Error(`Wall-corner zombie clipped inside safe standoff: minDist=${closeAudit.minDist.toFixed(2)}m`);
+  }
+  if (afterTurnAudit.hasArrowForCentered) {
+    throw new Error(`Centered visible zombie still triggered offscreen arrow: ${JSON.stringify(afterTurnAudit)}`);
+  }
+  console.log('[E2E] Round 4 off-screen flanking chevrons, above-floor visibility, standoff & wall-occlusion verified.');
 
   // 9c. Verify Bloater blast behind solid Farmhouse wall deals 0 damage
   const hpBeforeWallBlast = await page.evaluate(() => {

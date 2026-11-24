@@ -23,6 +23,16 @@ test('resolvePlayerZombieStandoff leaves distant zombies untouched', () => {
   assert.equal(res.nz, 0);
 });
 
+test('resolvePlayerZombieStandoff slides zombie tangentially around player when backed against a wall', () => {
+  // Wall blocks z > 0.35; player backed at (0, 0), zombie clipped at (0, 0.25)
+  const walkableWithWallBehindPlayer = (_x: number, z: number) => z <= 0.35;
+  const res = resolvePlayerZombieStandoff(0, 0.25, 0, 0, 0, 1.36, walkableWithWallBehindPlayer);
+  assert.equal(res.pushed, true);
+  assert.ok(walkableWithWallBehindPlayer(res.nx, res.nz), 'standoff target must remain walkable');
+  const dist = Math.hypot(res.nx, res.nz);
+  assert.ok(dist >= 1.35, `expected tangential slide standoff >= 1.35m, got ${dist}`);
+});
+
 test('computeRelativeThreatAngle accurately identifies front, right, left, and behind threats', () => {
   // Facing -Z (yaw = 0)
   assert.ok(Math.abs(computeRelativeThreatAngle(0, -5, 0, 0, 0)) < 0.01);
@@ -171,26 +181,59 @@ test('canZombieStrikePlayer blocks underground, staggered, dodged, cross-floor, 
   assert.equal(canZombieStrikePlayer({ ...base, hasDualHeightLos: false }), false);
   // Player slid behind zombie (zombie facing +Z, player now at -Z)
   assert.equal(canZombieStrikePlayer({ ...base, toPlayerZ: -1.4 }), false);
+  // Zombie mid-window vault (y > 0.35) or zero-distance inside capsule (< 0.35) must not hit
+  assert.equal(canZombieStrikePlayer({ ...base, zombieY: 0.65 }), false);
+  assert.equal(canZombieStrikePlayer({ ...base, horizontalDist: 0.2 }), false);
 });
 
-test('computeOffscreenThreats detects runners within widened 10.5m range, prioritizes telegraphed specials, and ignores wall-occluded targets', () => {
+test('computeOffscreenThreats detects runners within widened 10.5m range, prioritizes telegraphed specials, and ignores wall-occluded, climbing, cross-floor, and widescreen on-screen targets', () => {
+  const widescreenHalfFov = 0.86; // ~49.3 deg
   const threats = computeOffscreenThreats(
     [
-      { id: 1, x: 0, z: 9.2, state: 'chase', speedClass: 'run', isRising: false, hasLos: true },
-      { id: 2, x: 4.5, z: 0, state: 'bloater_fuse', speedClass: 'walk', isRising: false, hasLos: true },
-      { id: 3, x: 0, z: -3.0, state: 'chase', speedClass: 'sprint', isRising: false, hasLos: true }, // in front FOV
-      { id: 4, x: 0, z: 2.0, state: 'chase', speedClass: 'walk', isRising: true, hasLos: true }, // still rising
-      { id: 5, x: -3.0, z: 0, state: 'tear_board', speedClass: 'walk', isRising: false, hasLos: true }, // outside window
-      { id: 6, x: 0, z: 2.5, state: 'chase', speedClass: 'sprint', isRising: false, hasLos: false }, // sealed behind solid wall
+      { id: 1, x: 0, y: 0, z: 9.2, state: 'chase', speedClass: 'run', isRising: false, hasLos: true },
+      { id: 2, x: 4.5, y: 0, z: 0, state: 'bloater_fuse', speedClass: 'walk', isRising: false, hasLos: true },
+      { id: 3, x: 0, y: 0, z: -3.0, state: 'chase', speedClass: 'sprint', isRising: false, hasLos: true }, // in front FOV
+      { id: 4, x: 0, y: 0, z: 2.0, state: 'chase', speedClass: 'walk', isRising: true, hasLos: true }, // still rising
+      { id: 5, x: -3.0, y: 0, z: 0, state: 'tear_board', speedClass: 'walk', isRising: false, hasLos: true }, // outside window
+      { id: 6, x: 0, y: 0, z: 2.5, state: 'chase', speedClass: 'sprint', isRising: false, hasLos: false }, // sealed behind solid wall
+      { id: 7, x: -3.5, y: 0.6, z: 0, state: 'climb_in', speedClass: 'walk', isRising: false, hasLos: true }, // mid window climb
+      { id: 8, x: 3.5, y: 0, z: 0, state: 'chase', speedClass: 'sprint', isRising: false, hasLos: true }, // different floor (hayloft at y=2.6)
+      { id: 9, x: 2.5, y: 0, z: -3.2, state: 'chase', speedClass: 'run', isRising: false, hasLos: true }, // ~38 deg: visible inside 16:9 widescreen
     ],
     0,
     0,
     0,
+    10.5,
+    widescreenHalfFov,
+    4,
+    2.6,
   );
-  assert.equal(threats.length, 2);
-  assert.equal(threats[0]?.id, 2);
-  assert.equal(threats[0]?.isAttacking, true);
-  assert.equal(threats[1]?.id, 1);
+  // With playerFeetY = 2.6, all ground-floor threats (y=0) are excluded (same-floor only)
+  assert.equal(threats.length, 0);
+
+  const sameFloorThreats = computeOffscreenThreats(
+    [
+      { id: 1, x: 0, y: 0, z: 9.2, state: 'chase', speedClass: 'run', isRising: false, hasLos: true },
+      { id: 2, x: 4.5, y: 0, z: 0, state: 'bloater_fuse', speedClass: 'walk', isRising: false, hasLos: true },
+      { id: 3, x: 0, y: 0, z: -3.0, state: 'chase', speedClass: 'sprint', isRising: false, hasLos: true },
+      { id: 4, x: 0, y: 0, z: 2.0, state: 'chase', speedClass: 'walk', isRising: true, hasLos: true },
+      { id: 5, x: -3.0, y: 0, z: 0, state: 'tear_board', speedClass: 'walk', isRising: false, hasLos: true },
+      { id: 6, x: 0, y: 0, z: 2.5, state: 'chase', speedClass: 'sprint', isRising: false, hasLos: false },
+      { id: 7, x: -3.5, y: 0.6, z: 0, state: 'climb_in', speedClass: 'walk', isRising: false, hasLos: true },
+      { id: 9, x: 2.5, y: 0, z: -3.2, state: 'chase', speedClass: 'run', isRising: false, hasLos: true },
+    ],
+    0,
+    0,
+    0,
+    10.5,
+    widescreenHalfFov,
+    4,
+    0,
+  );
+  assert.equal(sameFloorThreats.length, 2);
+  assert.equal(sameFloorThreats[0]?.id, 2);
+  assert.equal(sameFloorThreats[0]?.isAttacking, true);
+  assert.equal(sameFloorThreats[1]?.id, 1);
 });
 
 import { canBloaterDamagePlayer, formatDamageCallout } from './combatPhysics';

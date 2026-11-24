@@ -135,7 +135,7 @@ export class BvhWorld {
   public hasLineOfSight(from: THREE.Vector3, to: THREE.Vector3): boolean {
     this.tmpLosDir.subVectors(to, from);
     const dist = this.tmpLosDir.length();
-    if (dist < 0.08) return true;
+    if (dist < 0.02) return true;
     this.tmpLosDir.divideScalar(dist);
     const maxD = Math.max(0.01, dist - 0.02);
     if (this.raycastFast(from, this.tmpLosDir, maxD, 0.001) !== null) {

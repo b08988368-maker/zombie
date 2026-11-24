@@ -60,10 +60,55 @@ export function resolvePlayerZombieStandoff(
   if (isWalkable(targetX, targetZ)) {
     nx = targetX;
     nz = targetZ;
-  } else if (isWalkable(targetX, zz)) {
-    nx = targetX;
-  } else if (isWalkable(zx, targetZ)) {
-    nz = targetZ;
+  } else {
+    // Search tangential angles around the player so corner/wall-pinned players never get overlapped
+    const slideAngles = [
+      0.44, -0.44, 0.87, -0.87, 1.31, -1.31, 1.75, -1.75, 2.18, -2.18, 2.62, -2.62, 3.05,
+    ];
+    let placed = false;
+    for (const ang of slideAngles) {
+      const ca = Math.cos(ang);
+      const sa = Math.sin(ang);
+      const rx = dirX * ca - dirZ * sa;
+      const rz = dirX * sa + dirZ * ca;
+      const cx = px + rx * minDistance;
+      const cz = pz + rz * minDistance;
+      if (isWalkable(cx, cz)) {
+        nx = cx;
+        nz = cz;
+        placed = true;
+        break;
+      }
+    }
+
+    // Tighter inner standoff ring (still well outside 0.35m player capsule + near-clip)
+    if (!placed) {
+      const innerDist = Math.max(0.92, minDistance * 0.78);
+      const innerAngles = [0, 0.52, -0.52, 1.05, -1.05, 1.57, -1.57, 2.09, -2.09, 2.62, -2.62];
+      for (const ang of innerAngles) {
+        const ca = Math.cos(ang);
+        const sa = Math.sin(ang);
+        const rx = dirX * ca - dirZ * sa;
+        const rz = dirX * sa + dirZ * ca;
+        const cx = px + rx * innerDist;
+        const cz = pz + rz * innerDist;
+        if (isWalkable(cx, cz)) {
+          nx = cx;
+          nz = cz;
+          placed = true;
+          break;
+        }
+      }
+    }
+
+    // Final axis-aligned fallback only if it keeps/increases separation
+    if (!placed) {
+      if (isWalkable(targetX, zz) && Math.hypot(targetX - px, zz - pz) > dist) {
+        nx = targetX;
+      } else if (isWalkable(zx, targetZ) && Math.hypot(zx - px, targetZ - pz) > dist) {
+        nz = targetZ;
+      }
+    }
   }
 
   // Gentle physical shove away from zombie onto player
@@ -370,7 +415,8 @@ export interface ZombieStrikeCheckInput {
 export function canZombieStrikePlayer(input: ZombieStrikeCheckInput): boolean {
   if (input.isRising || input.isStaggered) return false;
   if (input.zombieBodyY !== undefined && input.zombieBodyY < -0.08) return false;
-  if (input.horizontalDist > input.maxReach) return false;
+  if (input.zombieY > 0.35) return false;
+  if (input.horizontalDist < 0.35 || input.horizontalDist > input.maxReach) return false;
   if (Math.abs(input.playerFeetY - input.zombieY) >= 1.55) return false;
   if (!input.hasDualHeightLos) return false;
 
@@ -435,6 +481,7 @@ export function formatDamageCallout(
 export interface OffscreenThreatInput {
   id: number;
   x: number;
+  y?: number;
   z: number;
   state: string;
   speedClass: 'walk' | 'run' | 'sprint';
@@ -461,6 +508,7 @@ export function computeOffscreenThreats(
   maxRange = 10.5,
   halfFovRad = (38 * Math.PI) / 180,
   maxResults = 4,
+  playerFeetY?: number,
 ): OffscreenThreatIndicator[] {
   const results: OffscreenThreatIndicator[] = [];
 
@@ -471,9 +519,14 @@ export function computeOffscreenThreats(
       e.state === 'dying' ||
       e.state === 'dead' ||
       e.state === 'approach_window' ||
-      e.state === 'tear_board'
+      e.state === 'tear_board' ||
+      e.state === 'climb_in'
     ) {
       continue;
+    }
+    if (e.y !== undefined) {
+      if (e.y > 0.35) continue;
+      if (playerFeetY !== undefined && Math.abs(playerFeetY - e.y) >= 1.55) continue;
     }
     const dist = Math.hypot(e.x - playerX, e.z - playerZ);
     if (dist > maxRange) continue;

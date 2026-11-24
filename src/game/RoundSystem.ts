@@ -97,10 +97,20 @@ export class RoundSystem {
     if (this.remainingToSpawn > 0 && alive < BALANCE.rounds.maxAlive) {
       this.spawnTimer -= dt;
       if (this.spawnTimer <= 0) {
+        const enemyType = this.pickEnemyType();
         const unlockedSpawns = spawnPoints.filter((s) => unlockedZones.has(s.zone));
         const playerZone = getZoneAtPosition(playerPos.x, playerPos.z);
         const remoteSpawns = unlockedSpawns.filter((s) => s.zone !== playerZone);
-        const candidatePool = remoteSpawns.length >= 2 ? remoteSpawns : unlockedSpawns;
+        let candidatePool = remoteSpawns.length >= 2 ? remoteSpawns : unlockedSpawns;
+        if (enemyType === 'hound') {
+          const openRemote = candidatePool.filter((s) => !s.windowId);
+          const openUnlocked = unlockedSpawns.filter((s) => !s.windowId);
+          if (openRemote.length > 0) {
+            candidatePool = openRemote;
+          } else if (openUnlocked.length > 0) {
+            candidatePool = openUnlocked;
+          }
+        }
         const chosen = selectSafeSpawnPoint(
           candidatePool,
           playerPos.x,
@@ -110,7 +120,6 @@ export class RoundSystem {
           8.5,
         );
         if (chosen) {
-          const enemyType = this.pickEnemyType();
           if (this.zombies.spawnEnemy(enemyType, this.round, chosen, this.rng, difficulty)) {
             this.remainingToSpawn--;
             if (enemyType === 'brute') {

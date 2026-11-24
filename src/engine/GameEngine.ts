@@ -1539,22 +1539,35 @@ export class GameEngine {
 
   private computeOffscreenThreatList(): OffscreenThreatIndicator[] {
     if (this.screen !== 'playing') return [];
+    const playerFeetY = this.player.position.y - BALANCE.player.capsuleHeight * 0.5;
+    const vHalf = THREE.MathUtils.degToRad(this.camera.fov * 0.5);
+    const horizHalfFov = Math.atan(Math.tan(vHalf) * Math.max(1, this.camera.aspect));
+    const threatHalfFov = Math.max(0.42, horizHalfFov * 0.94);
     const candidates = this.zombies.entities
       .filter((e) => e.active)
       .map((e) => ({
         id: e.id,
         x: e.x,
+        y: e.y,
         z: e.z,
         state: e.state,
         speedClass: e.speedClass,
         isRising: e.spawnRiseTimer > 0,
-        hasLos: e.root.visible && e.bodyGroup.position.y >= -0.08 && this.zombies.hasCombatLineOfSight(e, this.player.position),
+        hasLos:
+          e.root.visible &&
+          e.y <= 0.35 &&
+          e.bodyGroup.position.y >= -0.08 &&
+          this.zombies.hasCombatLineOfSight(e, this.player.position),
       }));
     return computeOffscreenThreats(
       candidates,
       this.player.position.x,
       this.player.position.z,
       this.player.yaw,
+      10.5,
+      threatHalfFov,
+      4,
+      playerFeetY,
     );
   }
 

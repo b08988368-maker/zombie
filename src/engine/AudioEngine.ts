@@ -558,6 +558,12 @@ export class AudioEngine {
     z: number,
   ): void {
     if (!this.ctx) return;
+    const dx = x - this.listenerX;
+    const dz = z - this.listenerZ;
+    const distSq = dx * dx + dz * dz;
+    const vertGap = Math.abs(y - this.listenerY);
+    if (kind === 'footstep' && (distSq > 9 * 9 || vertGap > 2.4)) return;
+    if (kind === 'groan' && (distSq > 20 * 20 || vertGap > 2.6)) return;
     const panner = this.createPanner(x, y, z);
     if (!panner) return;
     if (kind === 'attack' || kind === 'hound') {
@@ -986,6 +992,9 @@ export class AudioEngine {
 
   public playSpawnEruption(x: number, y: number, z: number): void {
     if (!this.ctx || !this.noiseBuffer) return;
+    const dx = x - this.listenerX;
+    const dz = z - this.listenerZ;
+    if (dx * dx + dz * dz > 22 * 22) return;
     const panner = this.createPanner(x, y, z);
     if (!panner) return;
     panner.refDistance = 4.0;

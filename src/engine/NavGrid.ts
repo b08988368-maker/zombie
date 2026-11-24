@@ -303,18 +303,21 @@ export class NavGrid {
     let bestDist = 1e9;
     let bx = 0;
     let bz = 0;
-    for (let dz = -1; dz <= 1; dz++) {
-      for (let dx = -1; dx <= 1; dx++) {
-        const nx = cx + dx;
-        const nz = cz + dz;
-        if (nx < 0 || nx >= this.width || nz < 0 || nz >= this.height) continue;
-        const ni = nz * this.width + nx;
-        if (this.walkable[ni] === 1 && (this.dist[ni] ?? 1e9) < bestDist) {
-          bestDist = this.dist[ni]!;
-          bx = dx;
-          bz = dz;
+    for (let r = 1; r <= 3; r++) {
+      for (let dz = -r; dz <= r; dz++) {
+        for (let dx = -r; dx <= r; dx++) {
+          const nx = cx + dx;
+          const nz = cz + dz;
+          if (nx < 0 || nx >= this.width || nz < 0 || nz >= this.height) continue;
+          const ni = nz * this.width + nx;
+          if (this.walkable[ni] === 1 && (this.dist[ni] ?? 1e9) < bestDist) {
+            bestDist = this.dist[ni]!;
+            bx = dx;
+            bz = dz;
+          }
         }
       }
+      if (bx !== 0 || bz !== 0) break;
     }
     const len = Math.hypot(bx, bz);
     if (len > 0.001) {

@@ -1148,13 +1148,16 @@ export class ZombieSystem {
       slot.bloaterCystsGroup.visible = false;
       slot.weakPointMesh.visible = false;
       slot.root.scale.set(1.0, 1.0, 1.0);
-      slot.spawnFogTimer = 1.0;
-      slot.spawnRiseTimer = 0.4;
+      const groundRise = !spawnPoint.windowId;
+      slot.spawnFogTimer = groundRise ? 1.0 : 0;
+      slot.spawnRiseTimer = groundRise ? 0.4 : 0;
       (slot.spawnFogRing.material as THREE.MeshBasicMaterial).color.setHex(0xef4444);
-      slot.spawnFogRing.visible = true;
+      slot.spawnFogRing.visible = groundRise;
       slot.baseMaterials[0] = this.houndSkinMat;
       this.applyHoundMaterial(slot, this.houndSkinMat);
-      this.audio.playSpawnEruption(slot.x, 0.4, slot.z);
+      if (groundRise) {
+        this.audio.playSpawnEruption(slot.x, 0.4, slot.z);
+      }
     } else {
       slot.humanoidGroup.visible = true;
       slot.houndGroup.visible = false;
@@ -1203,7 +1206,7 @@ export class ZombieSystem {
       this.applyMaterialsToRig(slot, slot.baseMaterials);
     }
 
-    if (spawnPoint.windowId && type !== 'hound') {
+    if (spawnPoint.windowId) {
       slot.windowId = spawnPoint.windowId;
       slot.state = 'approach_window';
     } else {
@@ -1773,24 +1776,43 @@ export class ZombieSystem {
         e.kbVz = 0;
       }
 
-      e.groanTimer -= dt;
-      if (e.groanTimer <= 0) {
-        e.groanTimer = 3.5 + Math.random() * 5.0;
-        const distSq = (e.x - playerPos.x) ** 2 + (e.z - playerPos.z) ** 2;
-        if (distSq < 28 * 28 && this.hasCombatLineOfSight(e, playerPos)) {
-          this.audio.playZombieSound(
-            e.type === 'hound' ? 'hound' : e.type === 'brute' ? 'brute' : 'groan',
-            e.x,
-            1.3,
-            e.z,
-          );
-        }
-      }
-
       const dxToP = playerPos.x - e.x;
       const dzToP = playerPos.z - e.z;
       const distToP = Math.hypot(dxToP, dzToP);
       const playerFeetY = playerPos.y - BALANCE.player.capsuleHeight * 0.5;
+      const entityMinStandoff =
+        e.type === 'hound'
+          ? 1.68
+          : e.isCrawler
+            ? 1.72
+            : e.type === 'brute'
+              ? 1.54
+              : e.type === 'bloater'
+                ? 1.44
+                : 1.36;
+
+      e.groanTimer -= dt;
+      if (e.groanTimer <= 0) {
+        e.groanTimer = 3.5 + Math.random() * 5.0;
+        const distSq = dxToP * dxToP + dzToP * dzToP;
+        if (
+          e.spawnRiseTimer <= 0 &&
+          e.root.visible &&
+          e.state !== 'approach_window' &&
+          e.state !== 'tear_board' &&
+          e.state !== 'climb_in' &&
+          Math.abs(playerFeetY - e.y) < 1.55 &&
+          distSq < 18 * 18 &&
+          this.hasCombatLineOfSight(e, playerPos)
+        ) {
+          this.audio.playZombieSound(
+            e.type === 'hound' ? 'hound' : e.type === 'brute' ? 'brute' : 'groan',
+            e.x,
+            e.y + 1.25,
+            e.z,
+          );
+        }
+      }
 
       // Ground-emerging spawns must visibly finish rising before chasing or swinging
       if (e.spawnRiseTimer > 0 && e.state === 'chase') {
@@ -1833,7 +1855,8 @@ export class ZombieSystem {
         } else {
           e.stateTimer += dt;
           e.yaw = Math.atan2(win.center.x - e.x, win.center.z - e.z);
-          if (e.stateTimer >= BALANCE.enemies.shambler.boardTearTime) {
+          const tearTime = e.type === 'hound' ? 0.55 : BALANCE.enemies.shambler.boardTearTime;
+          if (e.stateTimer >= tearTime) {
             e.stateTimer = 0;
             win.intactCount = Math.max(0, win.intactCount - 1);
             const plank = win.planks[win.intactCount];
@@ -1850,7 +1873,11 @@ export class ZombieSystem {
           e.state = 'chase';
         } else {
           e.stateTimer += dt;
-          const t = Math.min(1, e.stateTimer / BALANCE.enemies.shambler.climbDuration);
+          const climbDur =
+            e.type === 'hound'
+              ? BALANCE.enemies.shambler.climbDuration * 0.72
+              : BALANCE.enemies.shambler.climbDuration;
+          const t = Math.min(1, e.stateTimer / climbDur);
           e.x = THREE.MathUtils.lerp(win.outsidePos.x, win.insidePos.x, t);
           e.z = THREE.MathUtils.lerp(win.outsidePos.z, win.insidePos.z, t);
           e.y = Math.sin(t * Math.PI) * 0.95;
@@ -1889,10 +1916,11 @@ export class ZombieSystem {
         e.stateTimer += dt;
         const nx = e.x + e.vx * dt;
         const nz = e.z + e.vz * dt;
-        if (this.nav.isWalkableWorld(nx, nz)) {
+        const nextDist = Math.hypot(playerPos.x - nx, playerPos.z - nz);
+        if (this.nav.isWalkableWorld(nx, nz) && (nextDist >= entityMinStandoff || nextDist >= distToP)) {
           e.x = nx;
           e.z = nz;
-        } else {
+        } else if (!this.nav.isWalkableWorld(nx, nz)) {
           e.state = 'chase';
         }
         const chargeStrikes = canZombieStrikePlayer({
@@ -1948,8 +1976,8 @@ export class ZombieSystem {
             e.yaw += diff * Math.min(1, dt * 8.5);
           }
 
-          // Slight forward lunge during the strike window without slipping into vertical under-feet blindspot
-          if (frac >= 0.44 && frac <= 0.62 && distToP > 1.30 && e.staggerTimer <= 0) {
+          // Slight forward lunge during the strike window without slipping inside standoff blindspot
+          if (frac >= 0.44 && frac <= 0.62 && distToP > entityMinStandoff + 0.12 && e.staggerTimer <= 0) {
             const lungeStep = 1.55 * dt;
             const lx = e.x + Math.sin(e.yaw) * lungeStep;
             const lz = e.z + Math.cos(e.yaw) * lungeStep;
@@ -1964,13 +1992,13 @@ export class ZombieSystem {
             const reach =
               e.type === 'brute'
                 ? e.bossRole === 'alpha_boss'
-                  ? 2.45
-                  : 2.25
+                  ? 2.55
+                  : 2.38
                 : e.type === 'hound'
-                  ? 1.88
+                  ? 2.02
                   : e.isCrawler
-                    ? 1.80
-                    : 1.86;
+                    ? 2.02
+                    : 1.96;
             const strikes = canZombieStrikePlayer({
               isRising: e.spawnRiseTimer > 0 || !e.root.visible,
               isStaggered: e.staggerTimer > 0,
@@ -2043,12 +2071,12 @@ export class ZombieSystem {
         } else {
           const triggerRange =
             e.type === 'hound'
-              ? 1.82
+              ? 1.94
               : e.isCrawler
-                ? 1.72
+                ? 1.94
                 : e.type === 'brute'
-                  ? 2.22
-                  : 1.78;
+                  ? 2.28
+                  : 1.88;
           if (
             e.root.visible &&
             e.bodyGroup.position.y >= -0.08 &&
@@ -2062,17 +2090,20 @@ export class ZombieSystem {
             e.stateTimer = 0;
             e.attackDealt = false;
             activeAttackers++;
-            this.audio.playZombieSound(e.type === 'hound' ? 'hound' : 'attack', e.x, 1.4, e.z);
+            this.audio.playZombieSound(e.type === 'hound' ? 'hound' : 'attack', e.x, e.y + 1.35, e.z);
           } else if (e.staggerTimer <= 0) {
             if (
+              e.spawnRiseTimer <= 0 &&
+              e.root.visible &&
               (e.speedClass === 'run' || e.speedClass === 'sprint' || e.type === 'hound') &&
-              distToP < 7.2 &&
+              Math.abs(playerFeetY - e.y) < 1.55 &&
+              distToP < 6.8 &&
               this.hasCombatLineOfSight(e, playerPos)
             ) {
               e.stepSoundTimer -= dt;
               if (e.stepSoundTimer <= 0) {
                 e.stepSoundTimer = e.speedClass === 'sprint' ? 0.28 : 0.4;
-                this.audio.playZombieSound('footstep', e.x, 0.25, e.z);
+                this.audio.playZombieSound('footstep', e.x, e.y + 0.25, e.z);
               }
             }
 
@@ -2115,22 +2146,31 @@ export class ZombieSystem {
             }
 
             // Pace down slightly while waiting on attack cooldown right outside standoff
-            const paceScale = distToP < 1.48 && e.attackCooldown > 0 ? 0.35 : 1.0;
+            const paceScale = distToP < entityMinStandoff + 0.25 && e.attackCooldown > 0 ? 0.35 : 1.0;
             e.vx = dirX * e.moveSpeed * paceScale;
             e.vz = dirZ * e.moveSpeed * paceScale;
             const nx = e.x + e.vx * dt;
             const nz = e.z + e.vz * dt;
-            if (!curWalkable || this.nav.isWalkableWorld(nx, nz)) {
+            if (this.nav.isWalkableWorld(nx, nz)) {
               e.x = nx;
               e.z = nz;
-            } else {
-              if (this.nav.isWalkableWorld(nx, e.z)) e.x = nx;
-              else if (this.nav.isWalkableWorld(e.x, nz)) e.z = nz;
+            } else if (this.nav.isWalkableWorld(nx, e.z)) {
+              e.x = nx;
+            } else if (this.nav.isWalkableWorld(e.x, nz)) {
+              e.z = nz;
+            } else if (!curWalkable) {
+              // Strictly step toward the nearest walkable cell without bypassing walls toward the player
+              this.nav.sampleFlow(e.x, e.z, this.flowSample);
+              const flen = Math.hypot(this.flowSample.x, this.flowSample.z);
+              if (flen > 0.01) {
+                e.x += (this.flowSample.x / flen) * e.moveSpeed * dt;
+                e.z += (this.flowSample.z / flen) * e.moveSpeed * dt;
+              }
             }
 
             if (len > 0.05) {
               const targetYaw =
-                distToP < 1.65 ? Math.atan2(dxToP, dzToP) : Math.atan2(dirX, dirZ);
+                distToP < entityMinStandoff + 0.35 ? Math.atan2(dxToP, dzToP) : Math.atan2(dirX, dirZ);
               let diff = targetYaw - e.yaw;
               while (diff > Math.PI) diff -= Math.PI * 2;
               while (diff < -Math.PI) diff += Math.PI * 2;
@@ -2144,7 +2184,7 @@ export class ZombieSystem {
           e.lastProgressX = e.x;
           e.lastProgressZ = e.z;
           e.stuckTimer = 0;
-        } else if (e.staggerTimer <= 0 && !(distToP < 1.5 && e.attackCooldown > 0)) {
+        } else if (e.staggerTimer <= 0 && !(distToP < entityMinStandoff + 0.25 && e.attackCooldown > 0)) {
           e.stuckTimer += dt;
           if (e.stuckTimer >= BALANCE.enemies.shambler.stuckTimeout) {
             e.stuckTimer = 0;
@@ -2152,43 +2192,11 @@ export class ZombieSystem {
           }
         }
       }
-
-      // Solid Player-Zombie Standoff: prevent zombie from clipping inside player capsule/under-feet blindspot
-      if (e.state !== 'climb_in' && e.state !== 'tear_board' && e.state !== 'approach_window') {
-        const minStandoff =
-          e.type === 'hound'
-            ? 1.38
-            : e.isCrawler
-              ? 1.40
-              : e.type === 'brute'
-                ? 1.48
-                : e.type === 'bloater'
-                  ? 1.32
-                  : 1.24;
-        const standoff = resolvePlayerZombieStandoff(
-          e.x,
-          e.z,
-          e.yaw,
-          playerPos.x,
-          playerPos.z,
-          minStandoff,
-          (wx, wz) => this.nav.isWalkableWorld(wx, wz),
-        );
-        if (standoff.pushed) {
-          e.x = standoff.nx;
-          e.z = standoff.nz;
-          shoveTotalX += standoff.shoveX;
-          shoveTotalZ += standoff.shoveZ;
-        }
-      }
     }
 
-    if (onPlayerShove && (Math.abs(shoveTotalX) > 0.01 || Math.abs(shoveTotalZ) > 0.01)) {
-      onPlayerShove(shoveTotalX * dt * 2.6, shoveTotalZ * dt * 2.6);
-    }
-
-    // Hard Zombie-Zombie Circle Separation Pass so hordes stay readable and distinct
-    const minPairSep = 0.7;
+    // Hard Zombie-Zombie Circle Separation Pass BEFORE final player-zombie standoff
+    // so horde collisions never push a zombie inside the player's camera or capsule
+    const minPairSep = 0.72;
     const minPairSepSq = minPairSep * minPairSep;
     for (let i = 0; i < MAX_ZOMBIES; i++) {
       const a = this.entities[i]!;
@@ -2218,6 +2226,51 @@ export class ZombieSystem {
           }
         }
       }
+    }
+
+    // Authoritative Solid Player-Zombie Standoff Pass AFTER separation:
+    // guarantees zero zombies clip inside player capsule/near-clip or low-profile blindspot
+    for (let i = 0; i < MAX_ZOMBIES; i++) {
+      const e = this.entities[i]!;
+      if (
+        !e.active ||
+        e.state === 'dying' ||
+        e.state === 'dead' ||
+        e.state === 'climb_in' ||
+        e.state === 'tear_board' ||
+        e.state === 'approach_window'
+      ) {
+        continue;
+      }
+      const minStandoff =
+        e.type === 'hound'
+          ? 1.68
+          : e.isCrawler
+            ? 1.72
+            : e.type === 'brute'
+              ? 1.54
+              : e.type === 'bloater'
+                ? 1.44
+                : 1.36;
+      const standoff = resolvePlayerZombieStandoff(
+        e.x,
+        e.z,
+        e.yaw,
+        playerPos.x,
+        playerPos.z,
+        minStandoff,
+        (wx, wz) => this.nav.isWalkableWorld(wx, wz),
+      );
+      if (standoff.pushed) {
+        e.x = standoff.nx;
+        e.z = standoff.nz;
+        shoveTotalX += standoff.shoveX;
+        shoveTotalZ += standoff.shoveZ;
+      }
+    }
+
+    if (onPlayerShove && (Math.abs(shoveTotalX) > 0.01 || Math.abs(shoveTotalZ) > 0.01)) {
+      onPlayerShove(shoveTotalX * dt * 2.6, shoveTotalZ * dt * 2.6);
     }
 
     // Final transform sync & speed-matched rig animation
@@ -2250,7 +2303,9 @@ export class ZombieSystem {
     unlockedZones: Set<ZoneId>,
     spawnPoints: SpawnPoint[],
   ): void {
-    const valid = spawnPoints.filter((s) => unlockedZones.has(s.zone));
+    const unlocked = spawnPoints.filter((s) => unlockedZones.has(s.zone));
+    const openSpawns = e.type === 'hound' ? unlocked.filter((s) => !s.windowId) : [];
+    const valid = openSpawns.length > 0 ? openSpawns : unlocked;
     const best = selectSafeSpawnPoint(valid, playerPos.x, playerPos.z, 0.5, 14, 8.5);
     if (!best) return;
     e.x = best.position.x;
@@ -2260,7 +2315,7 @@ export class ZombieSystem {
     e.lastProgressZ = e.z;
     e.stuckCount++;
     this.stuckTeleportCount++;
-    if (best.windowId && e.type !== 'hound') {
+    if (best.windowId) {
       e.windowId = best.windowId;
       e.spawnRiseTimer = 0;
       e.spawnFogTimer = 0;
@@ -2268,8 +2323,8 @@ export class ZombieSystem {
       e.state = 'approach_window';
     } else {
       e.windowId = null;
-      e.spawnRiseTimer = 0.65;
-      e.spawnFogTimer = 0.85;
+      e.spawnRiseTimer = e.type === 'hound' ? 0.4 : 0.65;
+      e.spawnFogTimer = e.type === 'hound' ? 1.0 : 0.85;
       e.spawnFogRing.visible = true;
       this.audio.playSpawnEruption(e.x, 0.4, e.z);
       e.state = 'chase';
@@ -2339,11 +2394,11 @@ export class ZombieSystem {
     }
 
     if (e.isCrawler) {
-      // Keep crawlers cleanly ON TOP of the floor slab (y >= 0.06m) so chest, arms, head & glowing eyes remain fully visible
-      e.bodyGroup.position.y = 0.16;
-      e.bodyGroup.rotation.set(1.28, 0, 0);
-      e.torsoPivot.rotation.set(-0.18, c * 0.18, 0);
-      e.headPivot.rotation.set(-1.05, 0, Math.sin(e.animPhase * 0.7) * 0.14);
+      // Keep crawlers cleanly ON TOP of the floor slab and elevated enough to remain visible inside 80° VFOV at standoff
+      e.bodyGroup.position.y = 0.24;
+      e.bodyGroup.rotation.set(1.24, 0, 0);
+      e.torsoPivot.rotation.set(-0.26, c * 0.18, 0);
+      e.headPivot.rotation.set(-1.18, 0, Math.sin(e.animPhase * 0.7) * 0.14);
       e.leftArm.rotation.x = -1.35 + s * 0.52 * Math.max(0.3, e.strideBlend);
       e.rightArm.rotation.x = -1.35 - s * 0.52 * Math.max(0.3, e.strideBlend);
       e.leftForearm.rotation.x = -0.55 - Math.max(0, s) * 0.45;

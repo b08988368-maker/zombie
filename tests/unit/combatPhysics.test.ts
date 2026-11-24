@@ -74,5 +74,44 @@ describe('HOLLOWFIELD Combat Physics & Threat Direction', () => {
     expect(threats).toHaveLength(1);
     expect(threats[0]?.id).toBe(7);
   });
+
+  it('slides zombies tangentially when player is against a wall and rejects climb_in/cross-floor/on-screen threats', () => {
+    const wallCheck = (_x: number, z: number) => z <= 0.35;
+    const res = resolvePlayerZombieStandoff(0, 0.25, 0, 0, 0, 1.36, wallCheck);
+    expect(res.pushed).toBe(true);
+    expect(wallCheck(res.nx, res.nz)).toBe(true);
+    expect(Math.hypot(res.nx, res.nz)).toBeGreaterThanOrEqual(1.35);
+
+    expect(
+      canZombieStrikePlayer({
+        isRising: false,
+        isStaggered: false,
+        horizontalDist: 0.25,
+        maxReach: 1.96,
+        zombieY: 0,
+        playerFeetY: 0,
+        zombieYaw: 0,
+        toPlayerX: 0,
+        toPlayerZ: 0.25,
+        hasDualHeightLos: true,
+      }),
+    ).toBe(false);
+
+    const filtered = computeOffscreenThreats(
+      [
+        { id: 1, x: -3.2, y: 0.6, z: 0, state: 'climb_in', speedClass: 'walk', isRising: false, hasLos: true },
+        { id: 2, x: 3.5, y: 0, z: 0, state: 'chase', speedClass: 'sprint', isRising: false, hasLos: true },
+        { id: 3, x: 2.5, y: 0, z: -3.2, state: 'chase', speedClass: 'run', isRising: false, hasLos: true },
+      ],
+      0,
+      0,
+      0,
+      10.5,
+      0.86,
+      4,
+      2.6,
+    );
+    expect(filtered).toHaveLength(0);
+  });
 });
 
